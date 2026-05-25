@@ -96,13 +96,31 @@ function genQR(str,n=21) {
     return ((r*n+c+Math.abs(h))*2654435761>>>0)%4<2;
   }));
 }
-function QR({value,size=140}) {
-  const cell=size/21;
-  return <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}
-    style={{display:"block",background:"#fff",borderRadius:8,padding:4}}>
-    {genQR(value).map((row,r)=>row.map((on,c)=>on?
-      <rect key={`${r}${c}`} x={c*cell} y={r*cell} width={cell} height={cell} fill="#111827"/>:null))}
-  </svg>;
+function QR({ value, size = 140 }) {
+  // เข้ารหัสข้อมูลข้อความให้ปลอดภัยต่อการส่งผ่าน URL
+  const encodedValue = encodeURIComponent(value);
+  
+  // เรียกใช้ API มาตรฐานในการส่งภาพ QR Code ขนาดที่ต้องการกลับมา
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodedValue}&choe=UTF-8`;
+
+  return (
+    <div style={{
+      display: "inline-block", 
+      background: "#fff", 
+      borderRadius: 8, 
+      padding: 8,
+      boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+      border: `1px solid ${C.border}`
+    }}>
+      <img 
+        src={qrUrl} 
+        alt={`QR Code: ${value}`} 
+        width={size} 
+        height={size} 
+        style={{ display: "block" }} 
+      />
+    </div>
+  );
 }
 
 // ─── Style helpers ─────────────────────────────────────────
