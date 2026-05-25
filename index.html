@@ -618,8 +618,20 @@ function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,
   })();
 
   const today=new Date().toLocaleDateString("th-TH",{year:"numeric",month:"long",day:"numeric",weekday:"long"});
-
-  if(!session||session.role!=="approver") return <div style={{padding:60,textAlign:"center"}}>
+ // role การอนุมัติ
+  const userRole = session?.role?.toLowerCase();
+ if (!session || userRole !== "approver") {
+  return (
+    <div style={{ padding: 60, textAlign: "center" }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>🔒</div>
+      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>ต้องการสิทธิ์ผู้อนุมัติ</div>
+      <div style={{ fontSize: 13, color: C.sub, marginBottom: 24 }}>
+        กรุณาเข้าสู่ระบบด้วยบัญชีผู้อนุมัติ (สิทธิ์ปัจจุบันของคุณ: {session?.role || "ไม่มีสิทธิ์"})
+      </div>
+      <button style={btn()} onClick={onLogin}>🔑 เข้าสู่ระบบ</button>
+    </div>
+  );
+}  if(!session||session.role!=="approver") return <div style={{padding:60,textAlign:"center"}}>
     <div style={{fontSize:48,marginBottom:16}}>🔒</div>
     <div style={{fontSize:18,fontWeight:700,marginBottom:8}}>ต้องการสิทธิ์ผู้อนุมัติ</div>
     <div style={{fontSize:13,color:C.sub,marginBottom:24}}>กรุณาเข้าสู่ระบบด้วยบัญชีผู้อนุมัติ</div>
