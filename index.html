@@ -586,7 +586,37 @@ function ScanCard({part,mg,session,onSubmit,onBack}) {
 function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,onLogin}) {
   const [tab,setTab]=useState("pending");
   const partMap=Object.fromEntries(parts.map(p=>[p.id,p]));
-  const grouped=(()=>{const m={};pending.forEach(r=>{if(!m[r.partId])m[r.partId]={...r,totalQty:0,rows:[]};m[r.partId].totalQty+=r.qty;m[r.partId].rows.push(r);});return Object.values(m);})();
+  
+  // 🔥 แก้ไขจุดนี้: ทำการ Mapping ดึงข้อมูลจาก partMap เข้ามารวมกลุ่มให้ถูกต้อง
+  const grouped=(()=>{
+    const m={};
+    pending.forEach(r=>{
+      // ตรวจสอบว่ามีข้อมูล Part ใน partMap หรือไม่ หากไม่มีให้ใช้ค่าเริ่มต้น
+      const partInfo = partMap[r.partId] || {};
+      
+      if(!m[r.partId]){
+        m[r.partId] = {
+          partId: r.partId,
+          partCode: r.partCode || partInfo.code || partInfo.partCode || "-", // รองรับกรณีโครงสร้างชื่อตัวแปรต่างกัน
+          partName: r.partName || partInfo.name || partInfo.partName || "-",
+          unit: r.unit || partInfo.unit || "-",
+          mgId: r.mgId || "-", // เก็บ mgId ไว้ใช้อ้างอิงหาเครื่องจักร
+          requesterName: r.requesterName || "-",
+          totalQty: 0,
+          rows: []
+        };
+      }
+      m[r.partId].totalQty += r.qty;
+      m[r.partId].rows.push(r);
+      
+      // อัปเดตชื่อผู้ขอเบิกเพิ่มเติมกรณีมีหลายคนใน Part เดียวกัน (หรือจะใช้คนแรกสุด)
+      if (r.requesterName && m[r.partId].requesterName === "-") {
+        m[r.partId].requesterName = r.requesterName;
+      }
+    });
+    return Object.values(m);
+  })();
+
   const today=new Date().toLocaleDateString("th-TH",{year:"numeric",month:"long",day:"numeric",weekday:"long"});
 
   if(!session||session.role!=="approver") return <div style={{padding:60,textAlign:"center"}}>
@@ -686,7 +716,6 @@ function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,
     </div>}
   </div>;
 }
-
 // ─── Settings Page ─────────────────────────────────────────
 function SettingsPage({mgs,onSaveMGs}) {
   const [list,setList]=useState(mgs.map(g=>({...g})));
