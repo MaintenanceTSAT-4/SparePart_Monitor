@@ -153,7 +153,15 @@ function App() {
   const [scanT,   setScanT]   = useState(null);
 
   useEffect(()=>{ initDB(); refresh(); },[]);
-
+  function initDB() {
+  if (!localStorage.getItem(KEYS.parts))   store(KEYS.parts,   INIT_PARTS);
+  if (!localStorage.getItem(KEYS.tx))      store(KEYS.tx,      []);
+  if (!localStorage.getItem(KEYS.mg))      store(KEYS.mg,      DEFAULT_MG);
+  if (!localStorage.getItem(KEYS.pending)) store(KEYS.pending, []);
+  
+  // 🔥 แนะนำให้บังคับลงทับ หรือเคลียร์กรณีเปลี่ยนโครงสร้างผู้ใช้
+  store(KEYS.users, DEFAULT_USERS); 
+}
   function refresh() {
     setParts(getParts()); setTxs(getTx());
     setMgs(getMGs());     setPending(getPending());
