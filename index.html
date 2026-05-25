@@ -1,3 +1,4 @@
+cat > /mnt/user-data/outputs/sparetrack.html << 'HTMLEOF'
 <!DOCTYPE html>
 <html lang="th">
 <head>
@@ -12,6 +13,10 @@
     ::-webkit-scrollbar{width:6px;height:6px}
     ::-webkit-scrollbar-track{background:#f1f5f9}
     ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+    .anim-fade{animation:fadeIn .25s ease}
+    .sync-pulse{animation:pulse 2s infinite}
   </style>
 </head>
 <body>
@@ -20,7 +25,58 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script type="text/babel" data-presets="react">
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
+
+// ═══════════════════════════════════════════════════════════
+//  ★★★ GOOGLE APPS SCRIPT URL — ใส่ URL ที่นี่ ★★★
+// ═══════════════════════════════════════════════════════════
+const GAS_URL = "";
+// ← วาง URL จาก Google Apps Script Deploy ที่นี่
+// ตัวอย่าง: "https://script.google.com/macros/s/AKfycbx.../exec"
+
+// ═══════════════════════════════════════════════════════════
+//  GOOGLE SHEETS API
+// ═══════════════════════════════════════════════════════════
+const GSheet = {
+  ok: () => GAS_URL.length > 10,
+
+  // Sheet1: Sync Stock คงเหลือทั้งหมด (overwrite)
+  async syncStock(parts, mgs) {
+    if (!this.ok()) return;
+    try {
+      const mgMap = Object.fromEntries(mgs.map(m=>[m.id,m]));
+      const rows = parts.map(p => ({
+        partCode:p.partCode, name:p.name, machine:mgMap[p.mgId]?.name||"-",
+        category:p.cat, stock:p.stock, min:p.min, max:p.max,
+        unit:p.unit, location:p.loc,
+        status: p.stock<=p.min?"CRITICAL":p.stock<=p.min*1.5?"LOW":p.stock>=p.max?"OVER":"OK",
+        updatedAt: new Date().toLocaleString("th-TH")
+      }));
+      await fetch(GAS_URL, { method:"POST", mode:"no-cors",
+        headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({action:"syncStock",data:rows})
+      });
+    } catch(e) { console.warn("GSheet syncStock:",e); }
+  },
+
+  // Sheet2: เพิ่มรายการเบิก/รับ 1 แถว (append)
+  async logTx(tx, mgName) {
+    if (!this.ok()) return;
+    try {
+      await fetch(GAS_URL, { method:"POST", mode:"no-cors",
+        headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({action:"logTransaction",data:{
+          date:new Date().toLocaleString("th-TH"),
+          partCode:tx.partCode, partName:tx.partName,
+          machine:mgName||"-",
+          type:tx.type==="withdraw"?"เบิก":"รับเข้า",
+          qty:tx.qty, stockBefore:tx.stockBefore, stockAfter:tx.stockAfter,
+          approvedBy:tx.approvedBy||"-", note:tx.note||"-"
+        }})
+      });
+    } catch(e) { console.warn("GSheet logTx:",e); }
+  }
+};
 
 // ═══════════════════════════════════════════════════════════
 //  CONSTANTS
@@ -37,267 +93,245 @@ const DEFAULT_MG = [
   { id:"mg7", name:"Press",         icon:"🔩", color:"#ec4899" },
 ];
 const PART_CATS = ["Bearing","Belt","Seal","Gear","Filter","Pump","Valve","Motor","Sensor","Electrical","Hydraulic","Pneumatic","Other"];
-const ICON_OPTS  = ["🤖","🦾","⚡","🔥","💧","⚙️","🔩","🏭","🛠️","⚒️","🔧","🔨","🪛","💡","🧲"];
+const ICON_OPTS = ["🤖","🦾","⚡","🔥","💧","⚙️","🔩","🏭","🛠️","⚒️","🔧","🔨","🪛","💡","🧲"];
 const COLOR_OPTS = ["#f59e0b","#10b981","#3b82f6","#ef4444","#8b5cf6","#f97316","#ec4899","#06b6d4","#84cc16","#6b7280"];
 
 const DEFAULT_USERS = [
-  { id:"u1", username:"MTN", name:"Maintenance",   role:"User",     dept:"Maintenance", password:"1234" },
-  { id:"u2", username:"MTN01",   name:"Maintenance",    role:"User",     dept:"Maintenance",  password:"1234" },
-  { id:"u3", username:"ENG", name:"Engineer",role:"approver", dept:"Management",  password:"Admin" },
+  { id:"u1", username:"MTN",   name:"Maintenance",  role:"User",     dept:"Maintenance", password:"1234" },
+  { id:"u2", username:"MTN01", name:"Maintenance",  role:"User",     dept:"Maintenance", password:"1234" },
+  { id:"u3", username:"ENG",   name:"Engineer",     role:"approver", dept:"Management",  password:"Admin" },
 ];
 
 const now = new Date().toISOString();
 const INIT_PARTS = [
-  { id:"p1",  partCode:"ABB-BRG-6205", name:"Bearing 6205",        desc:"Deep groove ball bearing", unit:"ชิ้น", stock:45, min:10, max:100, loc:"A-01", cat:"Bearing", mgId:"mg1", createdAt:now },
-
+  { id:"p1", partCode:"ABB-BRG-6205", name:"Bearing 6205", desc:"Deep groove ball bearing", unit:"ชิ้น", stock:45, min:10, max:100, loc:"A-01", cat:"Bearing", mgId:"mg1", createdAt:now },
 ];
 
 // ─── Storage ───────────────────────────────────────────────
-const load  = (k,fb) => { try { return JSON.parse(localStorage.getItem(k)) || fb; } catch { return fb; } };
-const store = (k,v)  => localStorage.setItem(k, JSON.stringify(v));
+const load  = (k,fb) => { try { return JSON.parse(localStorage.getItem(k))||fb; } catch{ return fb; } };
+const store = (k,v) => localStorage.setItem(k,JSON.stringify(v));
 const uid   = () => Math.random().toString(36).slice(2,10);
-function initDB() {
-  if (!localStorage.getItem(KEYS.parts))   store(KEYS.parts,   INIT_PARTS);
-  if (!localStorage.getItem(KEYS.tx))      store(KEYS.tx,      []);
-  if (!localStorage.getItem(KEYS.mg))      store(KEYS.mg,      DEFAULT_MG);
-  if (!localStorage.getItem(KEYS.pending)) store(KEYS.pending, []);
-  if (!localStorage.getItem(KEYS.users))   store(KEYS.users,   DEFAULT_USERS);
-}
-const getParts   = () => load(KEYS.parts,   INIT_PARTS);
-const getTx      = () => load(KEYS.tx,      []);
-const getMGs     = () => load(KEYS.mg,      DEFAULT_MG);
-const getPending = () => load(KEYS.pending, []);
-const getUsers   = () => load(KEYS.users,   DEFAULT_USERS);
 
-// ─── Stock helpers ─────────────────────────────────────────
-function stockStatus(p) {
-  if (p.stock <= p.min)       return "critical";
-  if (p.stock <= p.min*1.5)   return "low";
-  if (p.stock >= p.max)       return "over";
+function initDB(){
+  if(!localStorage.getItem(KEYS.parts))   store(KEYS.parts, INIT_PARTS);
+  if(!localStorage.getItem(KEYS.tx))      store(KEYS.tx, []);
+  if(!localStorage.getItem(KEYS.mg))      store(KEYS.mg, DEFAULT_MG);
+  if(!localStorage.getItem(KEYS.pending)) store(KEYS.pending, []);
+  store(KEYS.users, DEFAULT_USERS);
+}
+const getParts   = ()=>load(KEYS.parts, INIT_PARTS);
+const getTx      = ()=>load(KEYS.tx, []);
+const getMGs     = ()=>load(KEYS.mg, DEFAULT_MG);
+const getPending = ()=>load(KEYS.pending, []);
+const getUsers   = ()=>load(KEYS.users, DEFAULT_USERS);
+
+function stockStatus(p){
+  if(p.stock<=p.min) return "critical";
+  if(p.stock<=p.min*1.5) return "low";
+  if(p.stock>=p.max) return "over";
   return "ok";
 }
 const statusCfg = {
-  critical:{ label:"Critical",    bg:"#fef2f2", color:"#dc2626", border:"#fca5a5" },
-  low:     { label:"Low",  bg:"#fffbeb", color:"#d97706", border:"#fcd34d" },
-  over:    { label:"Over", bg:"#eff6ff", color:"#2563eb", border:"#93c5fd" },
-  ok:      { label:"Normal",     bg:"#f0fdf4", color:"#16a34a", border:"#86efac" },
+  critical:{label:"Critical",bg:"#fef2f2",color:"#dc2626",border:"#fca5a5"},
+  low:     {label:"Low",     bg:"#fffbeb",color:"#d97706",border:"#fcd34d"},
+  over:    {label:"Over",    bg:"#eff6ff",color:"#2563eb",border:"#93c5fd"},
+  ok:      {label:"Normal",  bg:"#f0fdf4",color:"#16a34a",border:"#86efac"},
 };
-function sBadge(st) {
-  return { display:"inline-block",padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:600,
-    background:statusCfg[st]?.bg, color:statusCfg[st]?.color, border:`1px solid ${statusCfg[st]?.border}` };
+function sBadge(st){
+  return {display:"inline-block",padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:600,
+    background:statusCfg[st]?.bg,color:statusCfg[st]?.color,border:`1px solid ${statusCfg[st]?.border}`};
 }
 
-// ─── QR Generator ─────────────────────────────────────────
-function genQR(str,n=21) {
-  const h=[...str].reduce((a,c)=>(a*31+c.charCodeAt(0))|0,0);
-  return Array.from({length:n},(_,r)=>Array.from({length:n},(_,c)=>{
-    if((r<8&&c<8)||(r<8&&c>=n-8)||(r>=n-8&&c<8)) return true;
-    if(r===6||c===6) return (r+c)%2===0;
-    return ((r*n+c+Math.abs(h))*2654435761>>>0)%4<2;
-  }));
-}
-function QR({ value, size = 140 }) {
-  // เข้ารหัสข้อมูลข้อความให้ปลอดภัยต่อการส่งผ่าน URL
-  const encodedValue = encodeURIComponent(value);
-  
-  // เรียกใช้ API มาตรฐานในการส่งภาพ QR Code ขนาดที่ต้องการกลับมา
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodedValue}&choe=UTF-8`;
-
-  return (
-    <div style={{
-      display: "inline-block", 
-      background: "#fff", 
-      borderRadius: 8, 
-      padding: 8,
-      boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-      border: `1px solid ${C.border}`
-    }}>
-      <img 
-        src={qrUrl} 
-        alt={`QR Code: ${value}`} 
-        width={size} 
-        height={size} 
-        style={{ display: "block" }} 
-      />
-    </div>
-  );
+// ─── QR (API จริง) ─────────────────────────────────────────
+function QR({value,size=140}){
+  const url=`https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(value)}&choe=UTF-8`;
+  return <div style={{display:"inline-block",background:"#fff",borderRadius:8,padding:8,
+    boxShadow:"0 2px 8px rgba(0,0,0,.08)",border:`1px solid ${C.border}`}}>
+    <img src={url} alt={`QR: ${value}`} width={size} height={size} style={{display:"block"}}/>
+  </div>;
 }
 
-// ─── Style helpers ─────────────────────────────────────────
-const C = {
-  bg:"#f4f5f7", border:"#e2e4e9", text:"#111827", sub:"#6b7280", muted:"#9ca3af",
-  primary:"#1d4ed8", primaryL:"#eff6ff", sidebar:"#0f172a", sidebarAct:"#1e3a5f",
-};
-const btn = (v="primary",ex={}) => ({
-  padding:"8px 16px", borderRadius:6, border:"none", cursor:"pointer",
-  fontSize:13, fontWeight:600, display:"inline-flex", alignItems:"center", gap:6,
-  ...(v==="primary" ?{background:C.primary,   color:"#fff"} :
-      v==="danger"  ?{background:"#dc2626",   color:"#fff"} :
-      v==="success" ?{background:"#16a34a",   color:"#fff"} :
-      v==="outline" ?{background:"#fff",      color:C.text, border:`1px solid ${C.border}`} :
-      v==="ghost"   ?{background:"transparent",color:C.sub} :
-                     {background:"#f3f4f6",   color:C.text}), ...ex,
-});
-const inp = (ex={}) => ({
-  width:"100%", padding:"9px 12px", borderRadius:6, border:`1px solid ${C.border}`,
-  fontSize:13, outline:"none", background:"#fff", boxSizing:"border-box", color:C.text, ...ex,
-});
-const card = (ex={}) => ({ background:"#fff", borderRadius:10, border:`1px solid ${C.border}`, ...ex });
-const MOD  = { position:"fixed",inset:0,background:"rgba(0,0,0,.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:16 };
-const MODB = (w=520) => ({ background:"#fff",borderRadius:14,padding:28,width:"100%",maxWidth:w,maxHeight:"90vh",overflowY:"auto" });
-const TH = { padding:"10px 14px",textAlign:"left",borderBottom:`2px solid ${C.border}`,color:C.sub,fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:".04em" };
-const TD = { padding:"11px 14px",borderBottom:`1px solid ${C.bg}`,verticalAlign:"middle",fontSize:13 };
-const lbl = (ex={}) => ({ fontSize:12,fontWeight:600,color:"#374151",display:"block",marginBottom:5,...ex });
+// ─── Styles ────────────────────────────────────────────────
+const C={bg:"#f4f5f7",border:"#e2e4e9",text:"#111827",sub:"#6b7280",muted:"#9ca3af",
+  primary:"#1d4ed8",primaryL:"#eff6ff",sidebar:"#0f172a",sidebarAct:"#1e3a5f"};
+const btn=(v="primary",ex={})=>({padding:"8px 16px",borderRadius:6,border:"none",cursor:"pointer",
+  fontSize:13,fontWeight:600,display:"inline-flex",alignItems:"center",gap:6,
+  ...(v==="primary"?{background:C.primary,color:"#fff"}:v==="danger"?{background:"#dc2626",color:"#fff"}:
+  v==="success"?{background:"#16a34a",color:"#fff"}:v==="outline"?{background:"#fff",color:C.text,border:`1px solid ${C.border}`}:
+  v==="ghost"?{background:"transparent",color:C.sub}:{background:"#f3f4f6",color:C.text}),...ex});
+const inp=(ex={})=>({width:"100%",padding:"9px 12px",borderRadius:6,border:`1px solid ${C.border}`,
+  fontSize:13,outline:"none",background:"#fff",boxSizing:"border-box",color:C.text,...ex});
+const card=(ex={})=>({background:"#fff",borderRadius:10,border:`1px solid ${C.border}`,...ex});
+const MOD={position:"fixed",inset:0,background:"rgba(0,0,0,.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:16};
+const MODB=(w=520)=>({background:"#fff",borderRadius:14,padding:28,width:"100%",maxWidth:w,maxHeight:"90vh",overflowY:"auto"});
+const TH={padding:"10px 14px",textAlign:"left",borderBottom:`2px solid ${C.border}`,color:C.sub,fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:".04em"};
+const TD={padding:"11px 14px",borderBottom:`1px solid ${C.bg}`,verticalAlign:"middle",fontSize:13};
+const lbl=(ex={})=>({fontSize:12,fontWeight:600,color:"#374151",display:"block",marginBottom:5,...ex});
 
 // ═══════════════════════════════════════════════════════════
 //  APP
 // ═══════════════════════════════════════════════════════════
-function App() {
-  const [page,    setPage]    = useState("dashboard");
-  const [parts,   setParts]   = useState([]);
-  const [txs,     setTxs]     = useState([]);
-  const [mgs,     setMgs]     = useState([]);
-  const [pending, setPending] = useState([]);
-  const [session, setSession] = useState(null);
-  const [notif,   setNotif]   = useState(null);
-  const [selMG,   setSelMG]   = useState(null);
-  const [selCat,  setSelCat]  = useState("all");
-  const [search,  setSearch]  = useState("");
-  const [qrM,     setQrM]     = useState(null);
-  const [addM,    setAddM]    = useState(false);
-  const [stkM,    setStkM]    = useState(null);
-  const [loginM,  setLoginM]  = useState(false);
-  const [scanT,   setScanT]   = useState(null);
+function App(){
+  const [page,setPage]=useState("dashboard");
+  const [parts,setParts]=useState([]);
+  const [txs,setTxs]=useState([]);
+  const [mgs,setMgs]=useState([]);
+  const [pending,setPending]=useState([]);
+  const [session,setSession]=useState(null);
+  const [notif,setNotif]=useState(null);
+  const [selMG,setSelMG]=useState(null);
+  const [selCat,setSelCat]=useState("all");
+  const [search,setSearch]=useState("");
+  const [qrM,setQrM]=useState(null);
+  const [addM,setAddM]=useState(false);
+  const [stkM,setStkM]=useState(null);
+  const [loginM,setLoginM]=useState(false);
+  const [scanPopup,setScanPopup]=useState(null); // ★ QR scan popup
+  const [syncing,setSyncing]=useState(false);
 
-  useEffect(()=>{ initDB(); refresh(); },[]);
-  function initDB() {
-  if (!localStorage.getItem(KEYS.parts))   store(KEYS.parts,   INIT_PARTS);
-  if (!localStorage.getItem(KEYS.tx))      store(KEYS.tx,      []);
-  if (!localStorage.getItem(KEYS.mg))      store(KEYS.mg,      DEFAULT_MG);
-  if (!localStorage.getItem(KEYS.pending)) store(KEYS.pending, []);
-  
-  // 🔥 แนะนำให้บังคับลงทับ หรือเคลียร์กรณีเปลี่ยนโครงสร้างผู้ใช้
-  store(KEYS.users, DEFAULT_USERS); 
-}
-  function refresh() {
-    setParts(getParts()); setTxs(getTx());
-    setMgs(getMGs());     setPending(getPending());
+  useEffect(()=>{initDB();refresh();},[]);
+
+  function refresh(){setParts(getParts());setTxs(getTx());setMgs(getMGs());setPending(getPending());}
+  function notify(msg,type="ok"){setNotif({msg,type});setTimeout(()=>setNotif(null),3500);}
+
+  const mgMap=Object.fromEntries(mgs.map(m=>[m.id,m]));
+  const alerts=parts.filter(p=>["critical","low"].includes(stockStatus(p)));
+
+  // ── Sync to Google Sheet ──
+  async function syncToSheets(){
+    if(!GSheet.ok()){notify("กรุณาตั้งค่า GAS_URL ก่อน","warn");return;}
+    setSyncing(true);
+    await GSheet.syncStock(getParts(),getMGs());
+    setSyncing(false);
+    notify("Sync ข้อมูลไป Google Sheet สำเร็จ ✓");
   }
-  function notify(msg,type="ok") {
-    setNotif({msg,type}); setTimeout(()=>setNotif(null),3500);
-  }
 
-  const mgMap = Object.fromEntries(mgs.map(m=>[m.id,m]));
-  const alerts = parts.filter(p=>["critical","low"].includes(stockStatus(p)));
-
-  function addPending(partId,qty,note,req) {
-    const ps=getParts(), p=ps.find(x=>x.id===partId); if(!p) return;
+  // ── Add pending ──
+  function addPending(partId,qty,note,req){
+    const ps=getParts(),p=ps.find(x=>x.id===partId);if(!p)return;
     const rows=getPending();
     rows.push({id:uid(),partId,partCode:p.partCode,partName:p.name,mgId:p.mgId,unit:p.unit,
       qty,note,requesterId:req?.id,requesterName:req?.name,createdAt:new Date().toISOString()});
-    store(KEYS.pending,rows); refresh();
+    store(KEYS.pending,rows);refresh();
     notify(`ส่งคำขอเบิก ${p.name} x${qty} รอการอนุมัติ`);
   }
-  function approveAll() {
-    const rows=getPending(), map={};
-    rows.forEach(r=>{ map[r.partId]=(map[r.partId]||0)+r.qty; });
-    const ps=getParts(), txNew=getTx();
+
+  // ── Approve all → ตัด Stock + sync Google Sheet ──
+  async function approveAll(){
+    const rows=getPending(),map={};
+    rows.forEach(r=>{map[r.partId]=(map[r.partId]||0)+r.qty;});
+    const ps=getParts(),txNew=getTx(),newTxs=[];
     Object.entries(map).forEach(([pid,qty])=>{
-      const i=ps.findIndex(p=>p.id===pid); if(i===-1) return;
-      const b=ps[i].stock; ps[i].stock=Math.max(0,b-qty);
-      txNew.unshift({id:uid(),partId:pid,partCode:ps[i].partCode,partName:ps[i].name,
+      const i=ps.findIndex(p=>p.id===pid);if(i===-1)return;
+      const b=ps[i].stock;ps[i].stock=Math.max(0,b-qty);
+      const tx={id:uid(),partId:pid,partCode:ps[i].partCode,partName:ps[i].name,
         mgId:ps[i].mgId,unit:ps[i].unit,type:"withdraw",qty,stockBefore:b,stockAfter:ps[i].stock,
-        approvedBy:session?.name,note:"อนุมัติจากใบรายการประจำวัน",createdAt:new Date().toISOString()});
+        approvedBy:session?.name,note:"อนุมัติจากใบรายการประจำวัน",createdAt:new Date().toISOString()};
+      txNew.unshift(tx);newTxs.push(tx);
     });
-    store(KEYS.parts,ps); store(KEYS.tx,txNew); store(KEYS.pending,[]);
-    refresh(); notify(`อนุมัติและตัดยอด ${Object.keys(map).length} รายการสำเร็จ`);
+    store(KEYS.parts,ps);store(KEYS.tx,txNew);store(KEYS.pending,[]);
+    refresh();notify(`อนุมัติและตัดยอด ${Object.keys(map).length} รายการสำเร็จ`);
+    // → Sync Google Sheet
+    for(const tx of newTxs) await GSheet.logTx(tx,mgMap[tx.mgId]?.name);
+    await GSheet.syncStock(getParts(),getMGs());
   }
-  function deletePending(id) {
-    store(KEYS.pending,getPending().filter(r=>r.id!==id)); refresh(); notify("ลบรายการแล้ว","warn");
-  }
-  function doReceive(partId,qty,note) {
-    const ps=getParts(), i=ps.findIndex(p=>p.id===partId); if(i===-1) return;
-    const b=ps[i].stock; ps[i].stock=b+qty; store(KEYS.parts,ps);
-    const txNew=getTx();
-    txNew.unshift({id:uid(),partId,partCode:ps[i].partCode,partName:ps[i].name,
+
+  function deletePending(id){store(KEYS.pending,getPending().filter(r=>r.id!==id));refresh();notify("ลบรายการแล้ว","warn");}
+
+  // ── Receive → sync ──
+  async function doReceive(partId,qty,note){
+    const ps=getParts(),i=ps.findIndex(p=>p.id===partId);if(i===-1)return;
+    const b=ps[i].stock;ps[i].stock=b+qty;store(KEYS.parts,ps);
+    const tx={id:uid(),partId,partCode:ps[i].partCode,partName:ps[i].name,
       mgId:ps[i].mgId,unit:ps[i].unit,type:"receive",qty,stockBefore:b,stockAfter:ps[i].stock,
-      approvedBy:session?.name,note,createdAt:new Date().toISOString()});
-    store(KEYS.tx,txNew); refresh(); notify(`รับเข้า ${ps[i].name} จำนวน ${qty} สำเร็จ`);
+      approvedBy:session?.name,note,createdAt:new Date().toISOString()};
+    const txNew=getTx();txNew.unshift(tx);store(KEYS.tx,txNew);
+    refresh();notify(`รับเข้า ${ps[i].name} จำนวน ${qty} สำเร็จ`);
+    await GSheet.logTx(tx,mgMap[ps[i].mgId]?.name);
+    await GSheet.syncStock(getParts(),getMGs());
   }
-  function doAddPart(data) {
+
+  function doAddPart(data){
     const ps=getParts();
     ps.push({id:uid(),...data,stock:+data.stock,min:+data.min,max:+data.max,createdAt:new Date().toISOString()});
-    store(KEYS.parts,ps); refresh(); notify(`เพิ่ม ${data.name} สำเร็จ`); setAddM(false);
+    store(KEYS.parts,ps);refresh();notify(`เพิ่ม ${data.name} สำเร็จ`);setAddM(false);
+    GSheet.syncStock(getParts(),getMGs());
   }
-  function exportCSV() {
-    const rows=[["วันที่","รหัส","ชื่อ","เครื่องจักร","ประเภท","จำนวน","ก่อน","หลัง","ผู้อนุมัติ","หมายเหตุ"]];
+
+  function exportCSV(){
+    const rows=[["วันที่","รหัส","ชื่อ","เครื่องจักร","ประเภท","จำนวน","ก่อน","หลัง","อนุมัติโดย","หมายเหตุ"]];
     txs.forEach(t=>rows.push([new Date(t.createdAt).toLocaleString("th-TH"),t.partCode,t.partName,
       mgMap[t.mgId]?.name||"-",t.type==="withdraw"?"เบิก":"รับเข้า",t.qty,t.stockBefore,t.stockAfter,t.approvedBy||"-",t.note||""]));
     const a=document.createElement("a");
     a.href=URL.createObjectURL(new Blob(["\uFEFF"+rows.map(r=>r.join(",")).join("\n")],{type:"text/csv;charset=utf-8"}));
-    a.download="spare_report.csv"; a.click(); notify("Export สำเร็จ");
+    a.download="spare_report.csv";a.click();notify("Export สำเร็จ");
   }
 
-  const mgParts = selMG ? parts.filter(p=>p.mgId===selMG) : parts;
-  const catList = [...new Set(mgParts.map(p=>p.cat))].sort();
-  const filtered = mgParts.filter(p=>{
-    const q=search.toLowerCase();
-    return (selCat==="all"||p.cat===selCat)&&(!q||p.name.toLowerCase().includes(q)||p.partCode.toLowerCase().includes(q));
-  });
+  // ★★ QR Scan → เด้ง Pop-up เบิกทันที ★★
+  function handleScanQR(partIdOrCode){
+    const val=partIdOrCode.trim();
+    let pid=val;
+    if(val.startsWith("SPAREPART:")) pid=val.split(":")[1];
+    const p=getParts().find(x=>x.id===pid||x.partCode===val||x.partCode===pid);
+    if(p) setScanPopup(p);
+    else notify("ไม่พบ Spare Part ที่ตรงกับ QR Code นี้","err");
+  }
 
-  // Nav items
+  const mgParts=selMG?parts.filter(p=>p.mgId===selMG):parts;
+  const catList=[...new Set(mgParts.map(p=>p.cat))].sort();
+  const filtered=mgParts.filter(p=>{const q=search.toLowerCase();
+    return (selCat==="all"||p.cat===selCat)&&(!q||p.name.toLowerCase().includes(q)||p.partCode.toLowerCase().includes(q));});
+
   const nav=[
-    {id:"dashboard",label:"Dashboard",      icon:"▦"},
-    {id:"parts",    label:"Spare Parts",     icon:"⊞"},
-    {id:"scan",     label:"สแกน / เบิก QR",  icon:"⬡"},
-    {id:"approve",  label:"ใบอนุมัติ",         icon:"✔"},
-    {id:"txs",      label:"ประวัติรายการ",     icon:"≡"},
-    {id:"settings", label:"ตั้งค่า",           icon:"⚙"},
+    {id:"dashboard",label:"Dashboard",icon:"▦"},
+    {id:"parts",label:"Spare Parts",icon:"⊞"},
+    {id:"scan",label:"สแกน QR เบิก",icon:"📱"},
+    {id:"approve",label:"ใบอนุมัติ",icon:"✔"},
+    {id:"txs",label:"ประวัติรายการ",icon:"≡"},
+    {id:"settings",label:"ตั้งค่า",icon:"⚙"},
   ];
 
   return (
     <div style={{fontFamily:"'DM Sans','Noto Sans Thai',sans-serif",minHeight:"100vh",background:C.bg,color:C.text}}>
+
       {/* Notification */}
-      {notif && <div style={{position:"fixed",top:20,right:20,zIndex:999,
+      {notif&&<div className="anim-fade" style={{position:"fixed",top:20,right:20,zIndex:999,
         background:notif.type==="warn"?"#fffbeb":notif.type==="err"?"#fef2f2":"#f0fdf4",
         border:`1px solid ${notif.type==="warn"?"#fcd34d":notif.type==="err"?"#fca5a5":"#86efac"}`,
         color:notif.type==="warn"?"#92400e":notif.type==="err"?"#991b1b":"#166534",
-        padding:"12px 20px",borderRadius:10,fontSize:13,fontWeight:500,
-        boxShadow:"0 4px 16px rgba(0,0,0,.13)"}}>
-        {notif.msg}
-      </div>}
+        padding:"12px 20px",borderRadius:10,fontSize:13,fontWeight:500,boxShadow:"0 4px 16px rgba(0,0,0,.13)"}}>
+        {notif.msg}</div>}
 
-      {/* Sidebar */}
-      <aside style={{width:220,background:C.sidebar,minHeight:"100vh",position:"fixed",top:0,left:0,zIndex:200,
-        display:"flex",flexDirection:"column"}}>
+      {/* ══ SIDEBAR ══ */}
+      <aside style={{width:220,background:C.sidebar,minHeight:"100vh",position:"fixed",top:0,left:0,zIndex:200,display:"flex",flexDirection:"column"}}>
         <div style={{padding:"22px 20px 18px",borderBottom:"1px solid #1e293b"}}>
           <div style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>⚙ SpareTrack</div>
           <div style={{fontSize:11,color:"#64748b",marginTop:2}}>QR Stock Management</div>
+          {GSheet.ok()&&<div className="sync-pulse" style={{marginTop:6,fontSize:10,color:"#4ade80",display:"flex",alignItems:"center",gap:4}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:"#4ade80",display:"inline-block"}}/>Google Sheet Connected</div>}
         </div>
         <div style={{flex:1,paddingTop:8}}>
-          {nav.map(n=>{
-            const act=page===n.id;
+          {nav.map(n=>{const act=page===n.id;
             const badge=n.id==="approve"?pending.length:n.id==="dashboard"?alerts.length:0;
-            return <div key={n.id}
-              style={{display:"flex",alignItems:"center",gap:10,padding:"11px 20px",cursor:"pointer",
-                color:act?"#f1f5f9":"#94a3b8",background:act?C.sidebarAct:"transparent",
-                borderLeft:act?"3px solid #3b82f6":"3px solid transparent",
-                fontSize:13,fontWeight:act?600:400}}
+            return <div key={n.id} style={{display:"flex",alignItems:"center",gap:10,padding:"11px 20px",cursor:"pointer",
+              color:act?"#f1f5f9":"#94a3b8",background:act?C.sidebarAct:"transparent",
+              borderLeft:act?"3px solid #3b82f6":"3px solid transparent",fontSize:13,fontWeight:act?600:400}}
               onClick={()=>setPage(n.id)}>
-              <span style={{fontSize:15}}>{n.icon}</span>
-              <span style={{flex:1}}>{n.label}</span>
+              <span style={{fontSize:15}}>{n.icon}</span><span style={{flex:1}}>{n.label}</span>
               {badge>0&&<span style={{background:"#dc2626",color:"#fff",borderRadius:10,fontSize:10,padding:"1px 6px",fontWeight:700}}>{badge}</span>}
-            </div>;
-          })}
+            </div>;})}
         </div>
+        {GSheet.ok()&&<div style={{padding:"8px 20px"}}>
+          <button style={{...btn("outline",{width:"100%",justifyContent:"center",fontSize:11,padding:"7px 12px",color:"#94a3b8",borderColor:"#334155"})}}
+            onClick={syncToSheets} disabled={syncing}>{syncing?"⏳ Syncing...":"🔄 Sync → Google Sheet"}</button></div>}
         <div style={{padding:"14px 20px",borderTop:"1px solid #1e293b"}}>
-          {session ? <>
-            <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>{session.role==="approver"?"👔 ผู้อนุมัติ":"👷 ผู้ปฏิบัติงาน"}</div>
+          {session?<>
+            <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>{session.role.toLowerCase()==="approver"?"👔 ผู้อนุมัติ":"👷 ผู้ปฏิบัติงาน"}</div>
             <div style={{fontSize:13,color:"#f1f5f9",fontWeight:600,marginBottom:2}}>{session.name}</div>
             <div style={{fontSize:11,color:"#64748b",marginBottom:10}}>{session.dept}</div>
             <button style={{...btn("ghost"),color:"#64748b",padding:"6px 0",fontSize:12}}
               onClick={()=>{setSession(null);setPage("dashboard");}}>ออกจากระบบ</button>
-          </> : <>
+          </>:<>
             <div style={{fontSize:12,color:"#64748b",marginBottom:8}}>ยังไม่ได้เข้าสู่ระบบ</div>
             <button style={{...btn("outline"),width:"100%",justifyContent:"center",fontSize:12}}
               onClick={()=>setLoginM(true)}>🔑 เข้าสู่ระบบ</button>
@@ -305,634 +339,523 @@ function App() {
         </div>
       </aside>
 
-      {/* Main */}
       <div style={{marginLeft:220,minHeight:"100vh"}}>
 
-        {/* DASHBOARD */}
-        {page==="dashboard" && <div style={{padding:32}}>
+        {/* ════════════════ DASHBOARD ════════════════ */}
+        {page==="dashboard"&&<div style={{padding:32}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:28}}>
-            <div>
-              <div style={{fontSize:22,fontWeight:700}}>Dashboard</div>
-              <div style={{fontSize:13,color:C.sub,marginTop:2}}>ภาพรวมระบบจัดการ Spare Part</div>
-            </div>
-            <button style={btn()} onClick={()=>setAddM(true)}>+ เพิ่ม Spare Part</button>
+            <div><div style={{fontSize:22,fontWeight:700}}>Dashboard</div>
+              <div style={{fontSize:13,color:C.sub,marginTop:2}}>ภาพรวมระบบจัดการ Spare Part</div></div>
+            <div style={{display:"flex",gap:8}}>
+              {GSheet.ok()&&<button style={btn("outline")} onClick={syncToSheets} disabled={syncing}>{syncing?"⏳":"🔄"} Sync Sheet</button>}
+              <button style={btn()} onClick={()=>setAddM(true)}>+ เพิ่ม Spare Part</button></div>
           </div>
-          {/* Stat cards */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:16,marginBottom:24}}>
             {[{l:"Spare Parts ทั้งหมด",v:parts.length,c:"#3b82f6"},
               {l:"รอการอนุมัติ",v:pending.length,c:pending.length>0?"#f59e0b":"#10b981"},
               {l:"แจ้งเตือน Stock ต่ำ",v:alerts.length,c:alerts.length>0?"#dc2626":"#10b981"},
-              {l:"รายการทั้งหมด",v:txs.length,c:"#8b5cf6"}].map((s,i)=>(
+              {l:"รายการทั้งหมด",v:txs.length,c:"#8b5cf6"}].map((s,i)=>
               <div key={i} style={card({padding:"18px 20px"})}>
                 <div style={{fontSize:11,fontWeight:600,color:C.sub,textTransform:"uppercase",letterSpacing:".05em",marginBottom:8}}>{s.l}</div>
-                <div style={{fontSize:30,fontWeight:700,color:s.c}}>{s.v}</div>
-              </div>
-            ))}
+                <div style={{fontSize:30,fontWeight:700,color:s.c}}>{s.v}</div></div>)}
           </div>
-          {/* Machine group cards */}
           <div style={card({padding:20,marginBottom:20})}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:16}}>สรุปตามเครื่องจักร</div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:12}}>
-              {mgs.map(mg=>{
-                const mp=parts.filter(p=>p.mgId===mg.id);
-                const al=mp.filter(p=>["critical","low"].includes(stockStatus(p)));
-                return <div key={mg.id}
-                  style={{borderRadius:8,border:`1.5px solid ${mg.color}33`,background:`${mg.color}0d`,
-                    padding:"14px",cursor:"pointer"}}
+              {mgs.map(mg=>{const mp=parts.filter(p=>p.mgId===mg.id);const al=mp.filter(p=>["critical","low"].includes(stockStatus(p)));
+                return <div key={mg.id} style={{borderRadius:8,border:`1.5px solid ${mg.color}33`,background:`${mg.color}0d`,padding:"14px",cursor:"pointer"}}
                   onClick={()=>{setSelMG(mg.id);setPage("parts");}}>
                   <div style={{fontSize:22,marginBottom:6}}>{mg.icon}</div>
                   <div style={{fontWeight:600,fontSize:13,marginBottom:2}}>{mg.name}</div>
                   <div style={{fontSize:11,color:C.sub}}>{mp.length} รายการ</div>
                   {al.length>0&&<div style={{marginTop:6,fontSize:11,color:"#dc2626",fontWeight:600}}>⚠ {al.length} ต่ำกว่า Min</div>}
-                </div>;
-              })}
+                </div>;})}
             </div>
           </div>
-          {/* Alerts */}
           {alerts.length>0&&<div style={card({padding:20,marginBottom:20,borderColor:"#fca5a5"})}>
             <div style={{fontWeight:700,fontSize:14,color:"#dc2626",marginBottom:14}}>⚠ แจ้งเตือน Stock ต่ำ</div>
-            {alerts.map(p=>{
-              const mg=mgMap[p.mgId],st=stockStatus(p);
+            {alerts.map(p=>{const mg=mgMap[p.mgId],st=stockStatus(p);
               return <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:"1px solid #fef2f2"}}>
-                <span style={{fontSize:18}}>{mg?.icon}</span>
-                <span style={sBadge(st)}>{statusCfg[st].label}</span>
+                <span style={{fontSize:18}}>{mg?.icon}</span><span style={sBadge(st)}>{statusCfg[st].label}</span>
                 <span style={{fontWeight:500,flex:1}}>{p.name}</span>
-                <span style={{fontSize:13,fontWeight:700,color:"#dc2626"}}>{p.stock}/{p.min} {p.unit}</span>
-              </div>;
-            })}
+                <span style={{fontSize:13,fontWeight:700,color:"#dc2626"}}>{p.stock}/{p.min} {p.unit}</span></div>;})}
           </div>}
-          {/* Recent TX */}
           <div style={card({padding:20})}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:14}}>รายการล่าสุด</div>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
               <thead><tr>{["วันที่","รหัส","ชื่อ","เครื่องจักร","ประเภท","จำนวน"].map(h=><th key={h} style={TH}>{h}</th>)}</tr></thead>
-              <tbody>
-                {txs.slice(0,7).map(t=>{const mg=mgMap[t.mgId]; return <tr key={t.id}>
-                  <td style={TD}><span style={{color:C.sub,fontSize:12}}>{new Date(t.createdAt).toLocaleString("th-TH",{dateStyle:"short",timeStyle:"short"})}</span></td>
-                  <td style={TD}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:4,fontSize:11}}>{t.partCode}</code></td>
-                  <td style={{...TD,fontWeight:500}}>{t.partName}</td>
-                  <td style={TD}>{mg?`${mg.icon} ${mg.name}`:"-"}</td>
-                  <td style={TD}><span style={{fontSize:12,fontWeight:600,color:t.type==="withdraw"?"#dc2626":"#16a34a"}}>{t.type==="withdraw"?"▼ เบิก":"▲ รับเข้า"}</span></td>
-                  <td style={TD}><strong>{t.qty}</strong></td>
-                </tr>;})}
+              <tbody>{txs.slice(0,7).map(t=>{const mg=mgMap[t.mgId];return <tr key={t.id}>
+                <td style={TD}><span style={{color:C.sub,fontSize:12}}>{new Date(t.createdAt).toLocaleString("th-TH",{dateStyle:"short",timeStyle:"short"})}</span></td>
+                <td style={TD}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:4,fontSize:11}}>{t.partCode}</code></td>
+                <td style={{...TD,fontWeight:500}}>{t.partName}</td>
+                <td style={TD}>{mg?`${mg.icon} ${mg.name}`:"-"}</td>
+                <td style={TD}><span style={{fontSize:12,fontWeight:600,color:t.type==="withdraw"?"#dc2626":"#16a34a"}}>{t.type==="withdraw"?"▼ เบิก":"▲ รับเข้า"}</span></td>
+                <td style={TD}><strong>{t.qty}</strong></td></tr>;})}
                 {txs.length===0&&<tr><td colSpan={6} style={{...TD,textAlign:"center",padding:32,color:C.muted}}>ยังไม่มีรายการ</td></tr>}
-              </tbody>
-            </table>
-          </div>
+              </tbody></table></div>
         </div>}
 
-        {/* SPARE PARTS */}
-        {page==="parts" && <div style={{display:"flex",minHeight:"100vh"}}>
-          {/* Left MG tabs */}
+        {/* ════════════════ SPARE PARTS ════════════════ */}
+        {page==="parts"&&<div style={{display:"flex",minHeight:"100vh"}}>
           <aside style={{width:200,background:"#fff",borderRight:`1px solid ${C.border}`,padding:"24px 0",flexShrink:0}}>
             <div style={{padding:"0 16px 14px",borderBottom:`1px solid ${C.border}`,marginBottom:8}}>
-              <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em"}}>เครื่องจักร</div>
-            </div>
+              <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em"}}>เครื่องจักร</div></div>
             {[{id:null,icon:"🔧",name:"ทั้งหมด",color:"#6b7280"},...mgs].map(mg=>{
-              const active=selMG===mg.id;
-              const count=mg.id?parts.filter(p=>p.mgId===mg.id).length:parts.length;
-              return <div key={mg.id||"all"}
-                style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",cursor:"pointer",
-                  background:active?`${mg.color}12`:"transparent",
-                  borderLeft:active?`3px solid ${mg.color}`:"3px solid transparent"}}
+              const active=selMG===mg.id;const count=mg.id?parts.filter(p=>p.mgId===mg.id).length:parts.length;
+              return <div key={mg.id||"all"} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",cursor:"pointer",
+                background:active?`${mg.color}12`:"transparent",borderLeft:active?`3px solid ${mg.color}`:"3px solid transparent"}}
                 onClick={()=>{setSelMG(mg.id);setSelCat("all");}}>
                 <span style={{fontSize:18}}>{mg.icon}</span>
-                <div>
-                  <div style={{fontSize:13,fontWeight:active?600:400,color:active?mg.color:C.text}}>{mg.name}</div>
-                  <div style={{fontSize:11,color:C.muted}}>{count} รายการ</div>
-                </div>
-              </div>;
-            })}
+                <div><div style={{fontSize:13,fontWeight:active?600:400,color:active?mg.color:C.text}}>{mg.name}</div>
+                  <div style={{fontSize:11,color:C.muted}}>{count} รายการ</div></div></div>;})}
           </aside>
-          {/* Right content */}
           <div style={{flex:1,padding:28,overflowY:"auto"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-              <div>
-                <div style={{fontSize:18,fontWeight:700}}>{selMG?`${mgMap[selMG]?.icon} ${mgMap[selMG]?.name}`:"Spare Parts ทั้งหมด"}</div>
-                <div style={{fontSize:12,color:C.sub,marginTop:2}}>{filtered.length} รายการ</div>
-              </div>
+              <div><div style={{fontSize:18,fontWeight:700}}>{selMG?`${mgMap[selMG]?.icon} ${mgMap[selMG]?.name}`:"Spare Parts ทั้งหมด"}</div>
+                <div style={{fontSize:12,color:C.sub,marginTop:2}}>{filtered.length} รายการ</div></div>
               <div style={{display:"flex",gap:8}}>
                 <input style={{...inp({width:200})}} placeholder="ค้นหา..." value={search} onChange={e=>setSearch(e.target.value)}/>
-                <button style={btn()} onClick={()=>setAddM(true)}>+ เพิ่ม Part</button>
-              </div>
-            </div>
-            {/* Category tabs */}
+                <button style={btn()} onClick={()=>setAddM(true)}>+ เพิ่ม Part</button></div></div>
             <div style={{display:"flex",gap:0,marginBottom:24,borderBottom:`2px solid ${C.border}`,overflowX:"auto"}}>
-              {["all",...catList].map(cat=>{
-                const active=selCat===cat;
+              {["all",...catList].map(cat=>{const active=selCat===cat;
                 const cnt=cat==="all"?(selMG?parts.filter(p=>p.mgId===selMG).length:parts.length):parts.filter(p=>p.cat===cat&&(selMG?p.mgId===selMG:true)).length;
-                return <div key={cat}
-                  style={{padding:"8px 16px",cursor:"pointer",whiteSpace:"nowrap",fontSize:13,fontWeight:active?700:500,
-                    color:active?C.primary:C.sub,borderBottom:active?`2px solid ${C.primary}`:"2px solid transparent",marginBottom:-2}}
-                  onClick={()=>setSelCat(cat)}>
-                  {cat==="all"?"ทั้งหมด":cat}<span style={{marginLeft:5,fontSize:11,color:active?C.primary:C.muted}}>({cnt})</span>
-                </div>;
-              })}
-            </div>
-            {/* Cards */}
-            {filtered.length===0
-              ? <div style={{textAlign:"center",padding:60,color:C.muted}}>ไม่พบ Spare Part</div>
-              : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:14}}>
-                  {filtered.map(p=>{
-                    const st=stockStatus(p),mg=mgMap[p.mgId],pct=Math.min(100,(p.stock/p.max)*100);
-                    return <div key={p.id} style={card({padding:16})}>
-                      {mg&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginBottom:10,
-                        background:`${mg.color}15`,border:`1px solid ${mg.color}33`,
-                        borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:600,color:mg.color}}>
-                        {mg.icon} {mg.name}</div>}
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-                        <div>
-                          <code style={{fontSize:10,color:C.muted,display:"block",marginBottom:3}}>{p.partCode}</code>
-                          <div style={{fontWeight:600,fontSize:14}}>{p.name}</div>
-                          <div style={{fontSize:11,color:C.sub,marginTop:1}}>{p.cat} · {p.loc}</div>
-                        </div>
-                        <span style={sBadge(st)}>{statusCfg[st].label}</span>
-                      </div>
-                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                        <strong style={{fontSize:14}}>{p.stock} {p.unit}</strong>
-                        <span style={{fontSize:11,color:C.muted}}>Min {p.min} · Max {p.max}</span>
-                      </div>
-                      <div style={{height:5,borderRadius:3,background:"#f3f4f6",overflow:"hidden",marginBottom:12}}>
-                        <div style={{height:"100%",width:`${pct}%`,borderRadius:3,
-                          background:st==="critical"?"#dc2626":st==="low"?"#f59e0b":st==="over"?"#3b82f6":"#10b981"}}/>
-                      </div>
-                      <div style={{display:"flex",gap:6}}>
-                        <button style={{...btn("default",{flex:1,justifyContent:"center",fontSize:12})}} onClick={()=>setStkM({part:p,mode:"withdraw"})}>▼ ขอเบิก</button>
-                        <button style={{...btn("outline",{flex:1,justifyContent:"center",fontSize:12})}} onClick={()=>setStkM({part:p,mode:"receive"})}>▲ รับเข้า</button>
-                        <button style={{...btn("ghost",{padding:"8px 10px"})}} onClick={()=>setQrM(p)}>⬡</button>
-                      </div>
-                    </div>;
-                  })}
-                </div>}
+                return <div key={cat} style={{padding:"8px 16px",cursor:"pointer",whiteSpace:"nowrap",fontSize:13,fontWeight:active?700:500,
+                  color:active?C.primary:C.sub,borderBottom:active?`2px solid ${C.primary}`:"2px solid transparent",marginBottom:-2}}
+                  onClick={()=>setSelCat(cat)}>{cat==="all"?"ทั้งหมด":cat}<span style={{marginLeft:5,fontSize:11,color:active?C.primary:C.muted}}>({cnt})</span></div>;})}</div>
+            {filtered.length===0?<div style={{textAlign:"center",padding:60,color:C.muted}}>ไม่พบ Spare Part</div>
+            :<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:14}}>
+              {filtered.map(p=>{const st=stockStatus(p),mg=mgMap[p.mgId],pct=Math.min(100,(p.stock/p.max)*100);
+                return <div key={p.id} style={card({padding:16})}>
+                  {mg&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginBottom:10,
+                    background:`${mg.color}15`,border:`1px solid ${mg.color}33`,borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:600,color:mg.color}}>
+                    {mg.icon} {mg.name}</div>}
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+                    <div><code style={{fontSize:10,color:C.muted,display:"block",marginBottom:3}}>{p.partCode}</code>
+                      <div style={{fontWeight:600,fontSize:14}}>{p.name}</div>
+                      <div style={{fontSize:11,color:C.sub,marginTop:1}}>{p.cat} · {p.loc}</div></div>
+                    <span style={sBadge(st)}>{statusCfg[st].label}</span></div>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                    <strong style={{fontSize:14}}>{p.stock} {p.unit}</strong>
+                    <span style={{fontSize:11,color:C.muted}}>Min {p.min} · Max {p.max}</span></div>
+                  <div style={{height:5,borderRadius:3,background:"#f3f4f6",overflow:"hidden",marginBottom:12}}>
+                    <div style={{height:"100%",width:`${pct}%`,borderRadius:3,
+                      background:st==="critical"?"#dc2626":st==="low"?"#f59e0b":st==="over"?"#3b82f6":"#10b981"}}/></div>
+                  <div style={{display:"flex",gap:6}}>
+                    <button style={{...btn("default",{flex:1,justifyContent:"center",fontSize:12})}} onClick={()=>setStkM({part:p,mode:"withdraw"})}>▼ ขอเบิก</button>
+                    <button style={{...btn("outline",{flex:1,justifyContent:"center",fontSize:12})}} onClick={()=>setStkM({part:p,mode:"receive"})}>▲ รับเข้า</button>
+                    <button style={{...btn("ghost",{padding:"8px 10px"})}} onClick={()=>setQrM(p)}>⬡</button></div></div>;})}</div>}
           </div>
         </div>}
 
-        {/* SCAN */}
-        {page==="scan" && <ScanPage parts={parts} mgs={mgs} mgMap={mgMap} session={session}
-          scanT={scanT} setScanT={setScanT}
-          onRequest={(pid,qty,note)=>{addPending(pid,qty,note,session);setScanT(null);}}
-          onLoginNeeded={()=>setLoginM(true)}/>}
+        {/* ════════════════ SCAN QR → POPUP เบิก ════════════════ */}
+        {page==="scan"&&<ScanQRPage parts={parts} mgs={mgs} mgMap={mgMap}
+          onScan={handleScanQR}/>}
 
-        {/* APPROVE */}
-        {page==="approve" && <ApprovePage session={session} pending={pending} txs={txs}
+        {/* ════════════════ APPROVE ════════════════ */}
+        {page==="approve"&&<ApprovePage session={session} pending={pending} txs={txs}
           mgs={mgs} mgMap={mgMap} parts={parts}
           onApproveAll={approveAll} onDelete={deletePending} onLogin={()=>setLoginM(true)}/>}
 
-        {/* TRANSACTIONS */}
-        {page==="txs" && <div style={{padding:32}}>
+        {/* ════════════════ TRANSACTIONS ════════════════ */}
+        {page==="txs"&&<div style={{padding:32}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
             <div style={{fontSize:20,fontWeight:700}}>ประวัติรายการทั้งหมด</div>
-            <button style={btn("outline")} onClick={exportCSV}>⤓ Export CSV</button>
-          </div>
+            <button style={btn("outline")} onClick={exportCSV}>⤓ Export CSV</button></div>
           <div style={card({overflow:"hidden"})}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
               <thead><tr style={{background:"#f8fafc"}}>
-                {["วันที่","รหัส","ชื่อ","เครื่องจักร","ประเภท","จำนวน","ก่อน","หลัง","อนุมัติโดย"].map(h=><th key={h} style={TH}>{h}</th>)}
-              </tr></thead>
-              <tbody>
-                {txs.map((t,i)=>{const mg=mgMap[t.mgId]; return <tr key={t.id} style={{background:i%2===0?"#fff":"#fafbfc"}}>
-                  <td style={{...TD,fontSize:12,color:C.sub}}>{new Date(t.createdAt).toLocaleString("th-TH")}</td>
-                  <td style={TD}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:4,fontSize:11}}>{t.partCode}</code></td>
-                  <td style={{...TD,fontWeight:500}}>{t.partName}</td>
-                  <td style={TD}>{mg?`${mg.icon} ${mg.name}`:"-"}</td>
-                  <td style={TD}><span style={{fontSize:12,fontWeight:600,color:t.type==="withdraw"?"#dc2626":"#16a34a"}}>{t.type==="withdraw"?"▼ เบิก":"▲ รับเข้า"}</span></td>
-                  <td style={{...TD,textAlign:"center"}}><strong>{t.qty}</strong></td>
-                  <td style={{...TD,color:C.sub}}>{t.stockBefore}</td>
-                  <td style={{...TD,color:C.sub}}>{t.stockAfter}</td>
-                  <td style={{...TD,fontSize:12}}>{t.approvedBy||"-"}</td>
-                </tr>;})}
+                {["วันที่","รหัส","ชื่อ","เครื่องจักร","ประเภท","จำนวน","ก่อน","หลัง","อนุมัติโดย"].map(h=><th key={h} style={TH}>{h}</th>)}</tr></thead>
+              <tbody>{txs.map((t,i)=>{const mg=mgMap[t.mgId];return <tr key={t.id} style={{background:i%2===0?"#fff":"#fafbfc"}}>
+                <td style={{...TD,fontSize:12,color:C.sub}}>{new Date(t.createdAt).toLocaleString("th-TH")}</td>
+                <td style={TD}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:4,fontSize:11}}>{t.partCode}</code></td>
+                <td style={{...TD,fontWeight:500}}>{t.partName}</td>
+                <td style={TD}>{mg?`${mg.icon} ${mg.name}`:"-"}</td>
+                <td style={TD}><span style={{fontSize:12,fontWeight:600,color:t.type==="withdraw"?"#dc2626":"#16a34a"}}>{t.type==="withdraw"?"▼ เบิก":"▲ รับเข้า"}</span></td>
+                <td style={{...TD,textAlign:"center"}}><strong>{t.qty}</strong></td>
+                <td style={{...TD,color:C.sub}}>{t.stockBefore}</td>
+                <td style={{...TD,color:C.sub}}>{t.stockAfter}</td>
+                <td style={{...TD,fontSize:12}}>{t.approvedBy||"-"}</td></tr>;})}
                 {txs.length===0&&<tr><td colSpan={9} style={{...TD,textAlign:"center",padding:40,color:C.muted}}>ยังไม่มีรายการ</td></tr>}
-              </tbody>
-            </table>
-          </div>
+              </tbody></table></div>
         </div>}
 
-        {/* SETTINGS */}
-        {page==="settings" && <SettingsPage mgs={mgs}
-          onSaveMGs={g=>{store(KEYS.mg,g);setMgs(g);notify("บันทึกสำเร็จ");}}/>}
+        {/* ════════════════ SETTINGS ════════════════ */}
+        {page==="settings"&&<SettingsPage mgs={mgs} onSaveMGs={g=>{store(KEYS.mg,g);setMgs(g);notify("บันทึกสำเร็จ");}}/>}
       </div>
 
-      {/* Modals */}
-      {addM    && <AddPartModal mgs={mgs} onAdd={doAddPart} onClose={()=>setAddM(false)}/>}
-      {qrM     && <QRModal part={qrM} mg={mgMap[qrM.mgId]} onClose={()=>setQrM(null)}/>}
-      {stkM    && <StockModal part={stkM.part} mode={stkM.mode} mg={mgMap[stkM.part.mgId]} session={session}
+      {/* ══ MODALS ══ */}
+      {addM&&<AddPartModal mgs={mgs} onAdd={doAddPart} onClose={()=>setAddM(false)}/>}
+      {qrM&&<QRModal part={qrM} mg={mgMap[qrM.mgId]} onClose={()=>setQrM(null)}/>}
+      {stkM&&<StockModal part={stkM.part} mode={stkM.mode} mg={mgMap[stkM.part.mgId]} session={session}
         onWithdraw={(pid,qty,note)=>{addPending(pid,qty,note,session);setStkM(null);}}
         onReceive={(pid,qty,note)=>{doReceive(pid,qty,note);setStkM(null);}}
         onClose={()=>setStkM(null)}/>}
-      {loginM  && <LoginModal
-        onLogin={u=>{setSession(u);setLoginM(false);notify(`ยินดีต้อนรับ ${u.name}`);if(u.role==="approver")setPage("approve");}}
+      {loginM&&<LoginModal
+        onLogin={u=>{setSession(u);setLoginM(false);notify(`ยินดีต้อนรับ ${u.name}`);if(u.role.toLowerCase()==="approver")setPage("approve");}}
         onClose={()=>setLoginM(false)}/>}
+
+      {/* ★★ SCAN POPUP — เด้งขึ้นทันทีเมื่อสแกน QR ★★ */}
+      {scanPopup&&<ScanWithdrawPopup part={scanPopup} mg={mgMap[scanPopup.mgId]} session={session}
+        onSubmit={(qty,note)=>{addPending(scanPopup.id,qty,note,session);setScanPopup(null);}}
+        onClose={()=>setScanPopup(null)}
+        onLoginNeeded={()=>{setScanPopup(null);setLoginM(true);}}/>}
     </div>
   );
 }
 
-// ─── Scan Page ─────────────────────────────────────────────
-function ScanPage({parts,mgs,mgMap,session,scanT,setScanT,onRequest,onLoginNeeded}) {
-  const [selMG,setSelMG]=useState(null);
-  return <div style={{padding:32,maxWidth:680,margin:"0 auto"}}>
-    <div style={{fontSize:18,fontWeight:700,marginBottom:4}}>สแกน / ขอเบิก QR Code</div>
-    <div style={{fontSize:13,color:C.sub,marginBottom:24}}>เลือกเครื่องจักร → เลือก Part → ยื่นคำขอเบิก</div>
-    {!scanT ? <>
-      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:20}}>
-        <div style={btn(selMG===null?"primary":"outline",{fontSize:12,cursor:"pointer"})} onClick={()=>setSelMG(null)}>🔧 ทั้งหมด</div>
-        {mgs.map(mg=><div key={mg.id} style={{...btn("outline",{fontSize:12,cursor:"pointer"}),
-          ...(selMG===mg.id?{background:mg.color,color:"#fff",border:`1px solid ${mg.color}`}:{})}}
-          onClick={()=>setSelMG(mg.id)}>{mg.icon} {mg.name}</div>)}
-      </div>
-      {(selMG?[mgMap[selMG]]:mgs).map(mg=>{
-        const mp=parts.filter(p=>p.mgId===mg.id); if(!mp.length) return null;
-        return <div key={mg.id} style={card({padding:16,marginBottom:16})}>
-          <div style={{fontWeight:700,fontSize:13,marginBottom:12,display:"flex",alignItems:"center",gap:6}}>
-            <span style={{fontSize:18}}>{mg.icon}</span>{mg.name}
+// ═══════════════════════════════════════════════════════════
+//  ★ SCAN QR PAGE — สแกนแล้วเด้ง Pop-up เบิกทันที
+// ═══════════════════════════════════════════════════════════
+function ScanQRPage({parts,mgs,mgMap,onScan}){
+  const [val,setVal]=useState("");
+  const inputRef=useRef(null);
+
+  function doScan(){
+    if(!val.trim())return;
+    onScan(val);
+    setVal("");
+  }
+
+  return <div style={{padding:32,maxWidth:640,margin:"0 auto"}}>
+    <div style={{fontSize:20,fontWeight:700,marginBottom:4}}>📱 สแกน QR Code เพื่อเบิก</div>
+    <div style={{fontSize:13,color:C.sub,marginBottom:28}}>สแกน QR ที่ติดชั้นวาง → Pop-up เบิกจะเด้งขึ้นทันที</div>
+
+    {/* Scanner area */}
+    <div style={card({overflow:"hidden",marginBottom:24})}>
+      <div style={{background:"#0f172a",padding:"40px 32px",textAlign:"center"}}>
+        <div style={{width:180,height:180,margin:"0 auto 20px",border:"3px dashed #3b82f6",borderRadius:16,
+          display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(59,130,246,.08)"}}>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:48,marginBottom:8}}>📷</div>
+            <div style={{fontSize:12,color:"#94a3b8"}}>ใช้ Smartphone</div>
+            <div style={{fontSize:11,color:"#64748b"}}>สแกน QR Code</div>
           </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-            {mp.map(p=><button key={p.id}
-              style={{...btn("outline",{flexDirection:"column",gap:2,padding:"10px 14px",textAlign:"left"})}}
-              onClick={()=>setScanT(p)}>
-              <code style={{fontSize:10,color:C.muted}}>{p.partCode}</code>
-              <span style={{fontWeight:600,fontSize:12}}>{p.name}</span>
-              <span style={{fontSize:11,color:stockStatus(p)==="critical"?"#dc2626":C.sub}}>คงเหลือ {p.stock} {p.unit}</span>
-            </button>)}
-          </div>
-        </div>;
-      })}
-    </> : <ScanCard part={scanT} mg={mgMap[scanT.mgId]} session={session}
-        onSubmit={(qty,note)=>{if(!session){onLoginNeeded();return;} onRequest(scanT.id,qty,note);}}
-        onBack={()=>setScanT(null)}/>}
-  </div>;
-}
-function ScanCard({part,mg,session,onSubmit,onBack}) {
-  const [qty,setQty]=useState(1); const [note,setNote]=useState(""); const st=stockStatus(part);
-  return <div style={card({padding:24,border:`2px solid ${mg?.color||"#3b82f6"}`})}>
-    {mg&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginBottom:14,
-      background:`${mg.color}15`,border:`1px solid ${mg.color}33`,borderRadius:20,
-      padding:"3px 12px",fontSize:12,fontWeight:600,color:mg.color}}>{mg.icon} {mg.name}</div>}
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
-      <div>
-        <code style={{fontSize:11,color:C.muted,display:"block",marginBottom:4}}>{part.partCode}</code>
-        <div style={{fontSize:20,fontWeight:700}}>{part.name}</div>
-        <div style={{fontSize:13,color:C.sub}}>{part.desc}</div>
-      </div>
-      <span style={sBadge(st)}>{statusCfg[st].label}</span>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:20}}>
-      {[["Stock คงเหลือ",`${part.stock} ${part.unit}`,st==="critical"?"#dc2626":C.text],
-        ["ตำแหน่ง",part.loc,C.text],["หมวดหมู่",part.cat,C.text]].map(([l,v,c])=>(
-        <div key={l} style={{background:C.bg,borderRadius:8,padding:"10px 12px"}}>
-          <div style={{fontSize:11,color:C.sub}}>{l}</div>
-          <div style={{fontSize:13,fontWeight:600,color:c}}>{v}</div>
         </div>
-      ))}
-    </div>
-    {!session&&<div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:8,padding:12,marginBottom:16,fontSize:12,color:"#92400e"}}>
-      ⚠ กรุณาเข้าสู่ระบบก่อนยื่นคำขอ</div>}
-    <div style={{marginBottom:12}}>
-      <span style={lbl()}>จำนวนที่ต้องการเบิก</span>
-      <div style={{display:"flex",alignItems:"center",gap:10}}>
-        <button style={btn("default",{padding:"8px 14px",fontSize:18})} onClick={()=>setQty(Math.max(1,qty-1))}>−</button>
-        <input type="number" min={1} max={part.stock} style={{...inp({width:80,textAlign:"center",fontSize:18,fontWeight:700})}}
-          value={qty} onChange={e=>setQty(Math.max(1,Math.min(part.stock,+e.target.value||1)))}/>
-        <button style={btn("default",{padding:"8px 14px",fontSize:18})} onClick={()=>setQty(Math.min(part.stock,qty+1))}>+</button>
-        <span style={{fontSize:13,color:C.sub}}>{part.unit}</span>
+        <div style={{fontSize:13,color:"#94a3b8",marginBottom:8}}>ใช้กล้องมือถือสแกน QR ที่ชั้นวาง Spare Part</div>
+        <div style={{fontSize:11,color:"#64748b"}}>หรือพิมพ์ Part Code ด้านล่าง</div>
+      </div>
+      <div style={{padding:20}}>
+        <div style={{display:"flex",gap:8}}>
+          <input ref={inputRef} style={{...inp({flex:1})}} placeholder="พิมพ์ Part Code เช่น ABB-BRG-6205 ..."
+            value={val} onChange={e=>setVal(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter")doScan();}}/>
+          <button style={btn()} onClick={doScan}>🔍 ค้นหา</button>
+        </div>
       </div>
     </div>
-    <div style={{marginBottom:18}}>
-      <span style={lbl()}>หมายเหตุ</span>
-      <input style={inp()} placeholder="ระบุงาน เครื่องจักร หรือเหตุผล..." value={note} onChange={e=>setNote(e.target.value)}/>
-    </div>
-    <div style={{display:"flex",gap:8}}>
-      <button style={{...btn("primary",{flex:1,justifyContent:"center"})}} onClick={()=>onSubmit(qty,note)}>📋 ยื่นคำขอเบิก {qty} {part.unit}</button>
-      <button style={btn("ghost")} onClick={onBack}>← ย้อนกลับ</button>
+
+    {/* Quick select — จำลองการสแกน */}
+    <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>เลือก Part เพื่อจำลองการสแกน</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:10}}>
+      {parts.map(p=>{const mg=mgMap[p.mgId],st=stockStatus(p);
+        return <div key={p.id} style={{...card({padding:14,cursor:"pointer",display:"flex",alignItems:"center",gap:12}),
+          transition:"box-shadow .15s"}}
+          onClick={()=>onScan(p.id)}
+          onMouseOver={e=>e.currentTarget.style.boxShadow="0 2px 12px rgba(0,0,0,.1)"}
+          onMouseOut={e=>e.currentTarget.style.boxShadow="none"}>
+          <div style={{width:44,height:44,borderRadius:8,background:`${mg?.color||"#6b7280"}12`,
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>
+            {mg?.icon||"⚙"}</div>
+          <div style={{flex:1,minWidth:0}}>
+            <code style={{fontSize:10,color:C.muted}}>{p.partCode}</code>
+            <div style={{fontWeight:600,fontSize:13}}>{p.name}</div>
+            <div style={{fontSize:11,color:C.sub}}>{mg?.name} · {p.loc}</div>
+          </div>
+          <div style={{textAlign:"right",flexShrink:0}}>
+            <span style={sBadge(st)}>{statusCfg[st].label}</span>
+            <div style={{fontSize:13,fontWeight:700,marginTop:4,color:st==="critical"?"#dc2626":C.text}}>{p.stock} {p.unit}</div>
+          </div>
+        </div>;})}
     </div>
   </div>;
 }
 
-// ─── Approve Page ──────────────────────────────────────────
-function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,onLogin}) {
+// ═══════════════════════════════════════════════════════════
+//  ★ SCAN WITHDRAW POPUP — Pop-up เบิกที่เด้งขึ้นทันที
+// ═══════════════════════════════════════════════════════════
+function ScanWithdrawPopup({part,mg,session,onSubmit,onClose,onLoginNeeded}){
+  const [qty,setQty]=useState(1);
+  const [note,setNote]=useState("");
+  const st=stockStatus(part);
+
+  function handleSubmit(){
+    if(!session){onLoginNeeded();return;}
+    onSubmit(qty,note);
+  }
+
+  return <div style={MOD}>
+    <div className="anim-fade" style={MODB(420)}>
+      {/* Header */}
+      <div style={{textAlign:"center",marginBottom:20}}>
+        {mg&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginBottom:10,
+          background:`${mg.color}15`,border:`1px solid ${mg.color}33`,borderRadius:20,
+          padding:"4px 14px",fontSize:12,fontWeight:600,color:mg.color}}>
+          {mg.icon} {mg.name}</div>}
+        <div style={{fontWeight:700,fontSize:20,marginBottom:4}}>{part.name}</div>
+        <code style={{fontSize:12,color:C.muted}}>{part.partCode}</code>
+      </div>
+
+      {/* Info chips */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:20}}>
+        <div style={{background:st==="critical"?"#fef2f2":C.bg,borderRadius:8,padding:"10px",textAlign:"center"}}>
+          <div style={{fontSize:10,color:C.sub,marginBottom:2}}>คงเหลือ</div>
+          <div style={{fontSize:18,fontWeight:700,color:st==="critical"?"#dc2626":C.text}}>{part.stock}</div>
+          <div style={{fontSize:11,color:C.muted}}>{part.unit}</div></div>
+        <div style={{background:C.bg,borderRadius:8,padding:"10px",textAlign:"center"}}>
+          <div style={{fontSize:10,color:C.sub,marginBottom:2}}>Min / Max</div>
+          <div style={{fontSize:14,fontWeight:600}}>{part.min} / {part.max}</div></div>
+        <div style={{background:C.bg,borderRadius:8,padding:"10px",textAlign:"center"}}>
+          <div style={{fontSize:10,color:C.sub,marginBottom:2}}>ตำแหน่ง</div>
+          <div style={{fontSize:14,fontWeight:600}}>{part.loc}</div></div>
+      </div>
+
+      {/* Qty */}
+      <div style={{marginBottom:14}}>
+        <span style={lbl()}>จำนวนที่ต้องการเบิก</span>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16}}>
+          <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}}
+            onClick={()=>setQty(Math.max(1,qty-1))}>−</button>
+          <input type="number" min={1} max={part.stock}
+            style={{...inp({width:90,textAlign:"center",fontSize:28,fontWeight:700,borderRadius:10,padding:"8px"})}}
+            value={qty} onChange={e=>setQty(Math.max(1,Math.min(part.stock,+e.target.value||1)))}/>
+          <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}}
+            onClick={()=>setQty(Math.min(part.stock,qty+1))}>+</button>
+        </div>
+      </div>
+
+      {/* Note */}
+      <div style={{marginBottom:16}}>
+        <span style={lbl()}>หมายเหตุ (ไม่บังคับ)</span>
+        <input style={inp()} placeholder="ระบุงาน / เครื่องจักรที่ใช้..." value={note} onChange={e=>setNote(e.target.value)}
+          onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}}/>
+      </div>
+
+      {!session&&<div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:8,padding:12,marginBottom:14,fontSize:12,color:"#92400e"}}>
+        ⚠ กรุณาเข้าสู่ระบบก่อนยื่นคำขอเบิก</div>}
+
+      <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:14,fontSize:15,borderRadius:10})}}
+        onClick={handleSubmit}>📋 ยื่นคำขอเบิก {qty} {part.unit}</button>
+      <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
+    </div>
+  </div>;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  APPROVE PAGE
+// ═══════════════════════════════════════════════════════════
+function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,onLogin}){
   const [tab,setTab]=useState("pending");
   const partMap=Object.fromEntries(parts.map(p=>[p.id,p]));
-  
-  // 🔥 แก้ไขจุดนี้: ทำการ Mapping ดึงข้อมูลจาก partMap เข้ามารวมกลุ่มให้ถูกต้อง
-  const grouped=(()=>{
-    const m={};
-    pending.forEach(r=>{
-      // ตรวจสอบว่ามีข้อมูล Part ใน partMap หรือไม่ หากไม่มีให้ใช้ค่าเริ่มต้น
-      const partInfo = partMap[r.partId] || {};
-      
-      if(!m[r.partId]){
-        m[r.partId] = {
-          partId: r.partId,
-          partCode: r.partCode || partInfo.code || partInfo.partCode || "-", // รองรับกรณีโครงสร้างชื่อตัวแปรต่างกัน
-          partName: r.partName || partInfo.name || partInfo.partName || "-",
-          unit: r.unit || partInfo.unit || "-",
-          mgId: r.mgId || "-", // เก็บ mgId ไว้ใช้อ้างอิงหาเครื่องจักร
-          requesterName: r.requesterName || "-",
-          totalQty: 0,
-          rows: []
-        };
-      }
-      m[r.partId].totalQty += r.qty;
-      m[r.partId].rows.push(r);
-      
-      // อัปเดตชื่อผู้ขอเบิกเพิ่มเติมกรณีมีหลายคนใน Part เดียวกัน (หรือจะใช้คนแรกสุด)
-      if (r.requesterName && m[r.partId].requesterName === "-") {
-        m[r.partId].requesterName = r.requesterName;
-      }
-    });
-    return Object.values(m);
-  })();
-
+  const grouped=(()=>{const m={};pending.forEach(r=>{
+    const pi=partMap[r.partId]||{};
+    if(!m[r.partId])m[r.partId]={partId:r.partId,partCode:r.partCode||pi.partCode||"-",
+      partName:r.partName||pi.name||"-",unit:r.unit||pi.unit||"-",mgId:r.mgId||"-",
+      requesterName:r.requesterName||"-",totalQty:0,rows:[]};
+    m[r.partId].totalQty+=r.qty;m[r.partId].rows.push(r);
+    if(r.requesterName&&m[r.partId].requesterName==="-")m[r.partId].requesterName=r.requesterName;
+  });return Object.values(m);})();
   const today=new Date().toLocaleDateString("th-TH",{year:"numeric",month:"long",day:"numeric",weekday:"long"});
- // role การอนุมัติ
-  const userRole = session?.role?.toLowerCase();
- if (!session || userRole !== "approver") {
-  return (
-    <div style={{ padding: 60, textAlign: "center" }}>
-      <div style={{ fontSize: 48, marginBottom: 16 }}>🔒</div>
-      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>ต้องการสิทธิ์ผู้อนุมัติ</div>
-      <div style={{ fontSize: 13, color: C.sub, marginBottom: 24 }}>
-        กรุณาเข้าสู่ระบบด้วยบัญชีผู้อนุมัติ (สิทธิ์ปัจจุบันของคุณ: {session?.role || "ไม่มีสิทธิ์"})
-      </div>
-      <button style={btn()} onClick={onLogin}>🔑 เข้าสู่ระบบ</button>
-    </div>
-  );
-}  if(!session||session.role!=="approver") return <div style={{padding:60,textAlign:"center"}}>
+  const userRole=session?.role?.toLowerCase();
+  if(!session||userRole!=="approver") return <div style={{padding:60,textAlign:"center"}}>
     <div style={{fontSize:48,marginBottom:16}}>🔒</div>
     <div style={{fontSize:18,fontWeight:700,marginBottom:8}}>ต้องการสิทธิ์ผู้อนุมัติ</div>
-    <div style={{fontSize:13,color:C.sub,marginBottom:24}}>กรุณาเข้าสู่ระบบด้วยบัญชีผู้อนุมัติ</div>
-    <button style={btn()} onClick={onLogin}>🔑 เข้าสู่ระบบ</button>
-  </div>;
+    <div style={{fontSize:13,color:C.sub,marginBottom:24}}>กรุณาเข้าสู่ระบบด้วยบัญชีผู้อนุมัติ (สิทธิ์: {session?.role||"ไม่มี"})</div>
+    <button style={btn()} onClick={onLogin}>🔑 เข้าสู่ระบบ</button></div>;
 
   return <div style={{padding:32}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:24}}>
-      <div>
-        <div style={{fontSize:20,fontWeight:700}}>ใบรายการขอเบิก Spare Part</div>
-        <div style={{fontSize:13,color:C.sub,marginTop:3}}>รวบรวมรายการจนถึง 07:00 น. ของแต่ละวัน</div>
-      </div>
-      <div style={{textAlign:"right"}}>
-        <div style={{fontSize:13,fontWeight:600,color:C.primary}}>👔 {session.name}</div>
-        <div style={{fontSize:12,color:C.sub}}>{session.dept}</div>
-      </div>
-    </div>
+      <div><div style={{fontSize:20,fontWeight:700}}>ใบรายการขอเบิก Spare Part</div>
+        <div style={{fontSize:13,color:C.sub,marginTop:3}}>รวบรวมรายการจนถึง 07:00 น. ของแต่ละวัน</div></div>
+      <div style={{textAlign:"right"}}><div style={{fontSize:13,fontWeight:600,color:C.primary}}>👔 {session.name}</div>
+        <div style={{fontSize:12,color:C.sub}}>{session.dept}</div></div></div>
     <div style={{display:"flex",marginBottom:24,borderBottom:`2px solid ${C.border}`}}>
-      {[{id:"pending",l:`รอการอนุมัติ (${pending.length})`},{id:"history",l:"ประวัติการอนุมัติ"}].map(t=>(
+      {[{id:"pending",l:`รอการอนุมัติ (${pending.length})`},{id:"history",l:"ประวัติการอนุมัติ"}].map(t=>
         <div key={t.id} style={{padding:"9px 20px",cursor:"pointer",fontSize:13,fontWeight:tab===t.id?700:500,
           color:tab===t.id?C.primary:C.sub,borderBottom:tab===t.id?`2px solid ${C.primary}`:"2px solid transparent",marginBottom:-2}}
-          onClick={()=>setTab(t.id)}>{t.l}</div>
-      ))}
-    </div>
-    {tab==="pending" && (pending.length===0
-      ? <div style={card({padding:60,textAlign:"center"})}><div style={{fontSize:40,marginBottom:12}}>✅</div>
-          <div style={{fontSize:16,fontWeight:600}}>ไม่มีรายการรอการอนุมัติ</div></div>
-      : <>
-        <div style={card({padding:28,marginBottom:20})}>
-          <div style={{textAlign:"center",marginBottom:24,paddingBottom:18,borderBottom:`2px solid ${C.border}`}}>
-            <div style={{fontSize:11,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:".08em",marginBottom:6}}>ใบขอเบิก Spare Part</div>
-            <div style={{fontSize:18,fontWeight:700,marginBottom:4}}>บันทึกการขอเบิกอุปกรณ์</div>
-            <div style={{fontSize:13,color:C.sub}}>วันที่ {today}</div>
-            <div style={{marginTop:10,display:"inline-flex",alignItems:"center",gap:8,
-              background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:20,padding:"4px 14px",fontSize:12,color:"#92400e",fontWeight:600}}>
-              ⏰ รวบรวมรายการจนถึงเวลา 07:00 น.</div>
-          </div>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-            <thead><tr style={{background:"#f8fafc"}}>
-              {["#","รหัส Part","ชื่อ Spare Part","เครื่องจักร","จำนวนรวม","หน่วย","ผู้ขอ","Stock","หมายเหตุ","ลบ"].map(h=><th key={h} style={{...TH,background:"#f8fafc"}}>{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {grouped.map((g,i)=>{
-                const part=partMap[g.partId],mg=mgMap[g.mgId],st=part?stockStatus(part):null;
-                return <tr key={g.partId} style={{background:i%2===0?"#fff":"#fafbfc"}}>
-                  <td style={{...TD,textAlign:"center",color:C.muted}}>{i+1}</td>
-                  <td style={TD}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:4,fontSize:11}}>{g.partCode}</code></td>
-                  <td style={{...TD,fontWeight:500}}>{g.partName}</td>
-                  <td style={TD}>{mg?<span style={{color:mg.color,fontWeight:600}}>{mg.icon} {mg.name}</span>:"-"}</td>
-                  <td style={{...TD,textAlign:"center"}}><strong style={{fontSize:15,color:C.primary}}>{g.totalQty}</strong></td>
-                  <td style={TD}>{g.unit}</td>
-                  <td style={{...TD,fontSize:12,color:C.sub}}>{g.requesterName||"-"}</td>
-                  <td style={TD}>{part?<span style={{color:st==="critical"?"#dc2626":C.text,fontWeight:500}}>{part.stock} {part.unit}</span>:"-"}</td>
-                  <td style={{...TD,fontSize:12,color:C.sub}}>{g.rows.map(r=>r.note).filter(Boolean).join(", ")||"-"}</td>
-                  <td style={TD}><button style={btn("danger",{padding:"4px 8px",fontSize:11})} onClick={()=>g.rows.forEach(r=>onDelete(r.id))}>✕</button></td>
-                </tr>;
-              })}
-            </tbody>
-            <tfoot>
-              <tr style={{background:"#f0fdf4",borderTop:`2px solid ${C.border}`}}>
-                <td colSpan={4} style={{...TD,fontWeight:700,textAlign:"right"}}>รวมทั้งหมด</td>
-                <td style={{...TD,fontWeight:700,color:C.primary,fontSize:15,textAlign:"center"}}>{grouped.reduce((s,g)=>s+g.totalQty,0)}</td>
-                <td colSpan={5} style={{...TD,color:C.sub}}>รายการ</td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+          onClick={()=>setTab(t.id)}>{t.l}</div>)}</div>
+    {tab==="pending"&&(pending.length===0
+      ?<div style={card({padding:60,textAlign:"center"})}><div style={{fontSize:40,marginBottom:12}}>✅</div>
+        <div style={{fontSize:16,fontWeight:600}}>ไม่มีรายการรอการอนุมัติ</div></div>
+      :<><div style={card({padding:28,marginBottom:20})}>
+        <div style={{textAlign:"center",marginBottom:24,paddingBottom:18,borderBottom:`2px solid ${C.border}`}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:".08em",marginBottom:6}}>ใบขอเบิก Spare Part</div>
+          <div style={{fontSize:18,fontWeight:700,marginBottom:4}}>บันทึกการขอเบิกอุปกรณ์</div>
+          <div style={{fontSize:13,color:C.sub}}>วันที่ {today}</div>
+          <div style={{marginTop:10,display:"inline-flex",alignItems:"center",gap:8,
+            background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:20,padding:"4px 14px",fontSize:12,color:"#92400e",fontWeight:600}}>
+            ⏰ รวบรวมรายการจนถึงเวลา 07:00 น.</div></div>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+          <thead><tr style={{background:"#f8fafc"}}>
+            {["#","รหัส Part","ชื่อ Spare Part","เครื่องจักร","จำนวนรวม","หน่วย","ผู้ขอ","Stock","หมายเหตุ","ลบ"].map(h=>
+              <th key={h} style={{...TH,background:"#f8fafc"}}>{h}</th>)}</tr></thead>
+          <tbody>{grouped.map((g,i)=>{const part=partMap[g.partId],mg=mgMap[g.mgId],st=part?stockStatus(part):null;
+            return <tr key={g.partId} style={{background:i%2===0?"#fff":"#fafbfc"}}>
+              <td style={{...TD,textAlign:"center",color:C.muted}}>{i+1}</td>
+              <td style={TD}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:4,fontSize:11}}>{g.partCode}</code></td>
+              <td style={{...TD,fontWeight:500}}>{g.partName}</td>
+              <td style={TD}>{mg?<span style={{color:mg.color,fontWeight:600}}>{mg.icon} {mg.name}</span>:"-"}</td>
+              <td style={{...TD,textAlign:"center"}}><strong style={{fontSize:15,color:C.primary}}>{g.totalQty}</strong></td>
+              <td style={TD}>{g.unit}</td>
+              <td style={{...TD,fontSize:12,color:C.sub}}>{g.requesterName||"-"}</td>
+              <td style={TD}>{part?<span style={{color:st==="critical"?"#dc2626":C.text,fontWeight:500}}>{part.stock} {part.unit}</span>:"-"}</td>
+              <td style={{...TD,fontSize:12,color:C.sub}}>{g.rows.map(r=>r.note).filter(Boolean).join(", ")||"-"}</td>
+              <td style={TD}><button style={btn("danger",{padding:"4px 8px",fontSize:11})} onClick={()=>g.rows.forEach(r=>onDelete(r.id))}>✕</button></td>
+            </tr>;})}</tbody>
+          <tfoot><tr style={{background:"#f0fdf4",borderTop:`2px solid ${C.border}`}}>
+            <td colSpan={4} style={{...TD,fontWeight:700,textAlign:"right"}}>รวมทั้งหมด</td>
+            <td style={{...TD,fontWeight:700,color:C.primary,fontSize:15,textAlign:"center"}}>{grouped.reduce((s,g)=>s+g.totalQty,0)}</td>
+            <td colSpan={5} style={{...TD,color:C.sub}}>รายการ</td></tr></tfoot></table></div>
         <div style={{...card({padding:20,background:"#f0fdf4",borderColor:"#86efac"}),display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-          <div>
-            <div style={{fontWeight:700,fontSize:14,color:"#166534"}}>พร้อมอนุมัติและตัดยอด Stock</div>
-            <div style={{fontSize:12,color:"#16a34a",marginTop:2}}>อนุมัติ {grouped.length} Part — Stock จะถูกตัดทันที</div>
-          </div>
-          <button style={btn("success")} onClick={onApproveAll}>✔ อนุมัติและตัดยอดทั้งหมด</button>
-        </div>
-      </>)}
-    {tab==="history" && <div style={card({overflow:"hidden"})}>
+          <div><div style={{fontWeight:700,fontSize:14,color:"#166534"}}>พร้อมอนุมัติและตัดยอด Stock</div>
+            <div style={{fontSize:12,color:"#16a34a",marginTop:2}}>อนุมัติ {grouped.length} Part — Stock จะถูกตัดทันที{GSheet.ok()?" + Sync Google Sheet":""}</div></div>
+          <button style={btn("success")} onClick={onApproveAll}>✔ อนุมัติและตัดยอดทั้งหมด</button></div></>)}
+    {tab==="history"&&<div style={card({overflow:"hidden"})}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
         <thead><tr style={{background:"#f8fafc"}}>
-          {["วันที่","รหัส","ชื่อ","เครื่องจักร","จำนวน","Stock หลัง","อนุมัติโดย"].map(h=><th key={h} style={TH}>{h}</th>)}
-        </tr></thead>
-        <tbody>
-          {txs.filter(t=>t.type==="withdraw").map((t,i)=>{const mg=mgMap[t.mgId]; return <tr key={t.id} style={{background:i%2===0?"#fff":"#fafbfc"}}>
-            <td style={{...TD,fontSize:12,color:C.sub}}>{new Date(t.createdAt).toLocaleString("th-TH",{dateStyle:"short",timeStyle:"short"})}</td>
-            <td style={TD}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:4,fontSize:11}}>{t.partCode}</code></td>
-            <td style={{...TD,fontWeight:500}}>{t.partName}</td>
-            <td style={TD}>{mg?`${mg.icon} ${mg.name}`:"-"}</td>
-            <td style={{...TD,textAlign:"center"}}><strong>{t.qty}</strong></td>
-            <td style={TD}>{t.stockAfter} {t.unit}</td>
-            <td style={{...TD,fontSize:12}}>{t.approvedBy||"-"}</td>
-          </tr>;})}
+          {["วันที่","รหัส","ชื่อ","เครื่องจักร","จำนวน","Stock หลัง","อนุมัติโดย"].map(h=><th key={h} style={TH}>{h}</th>)}</tr></thead>
+        <tbody>{txs.filter(t=>t.type==="withdraw").map((t,i)=>{const mg=mgMap[t.mgId];return <tr key={t.id} style={{background:i%2===0?"#fff":"#fafbfc"}}>
+          <td style={{...TD,fontSize:12,color:C.sub}}>{new Date(t.createdAt).toLocaleString("th-TH",{dateStyle:"short",timeStyle:"short"})}</td>
+          <td style={TD}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:4,fontSize:11}}>{t.partCode}</code></td>
+          <td style={{...TD,fontWeight:500}}>{t.partName}</td>
+          <td style={TD}>{mg?`${mg.icon} ${mg.name}`:"-"}</td>
+          <td style={{...TD,textAlign:"center"}}><strong>{t.qty}</strong></td>
+          <td style={TD}>{t.stockAfter} {t.unit}</td>
+          <td style={{...TD,fontSize:12}}>{t.approvedBy||"-"}</td></tr>;})}
           {txs.filter(t=>t.type==="withdraw").length===0&&<tr><td colSpan={7} style={{...TD,textAlign:"center",padding:40,color:C.muted}}>ยังไม่มีประวัติ</td></tr>}
-        </tbody>
-      </table>
-    </div>}
+        </tbody></table></div>}
   </div>;
 }
-// ─── Settings Page ─────────────────────────────────────────
-function SettingsPage({mgs,onSaveMGs}) {
+
+// ═══════════════════════════════════════════════════════════
+//  SETTINGS
+// ═══════════════════════════════════════════════════════════
+function SettingsPage({mgs,onSaveMGs}){
   const [list,setList]=useState(mgs.map(g=>({...g})));
   const [edit,setEdit]=useState(null);
   const [form,setForm]=useState({name:"",icon:"🤖",color:"#f59e0b"});
-  function save(){
-    if(!form.name.trim()) return;
-    const next=edit==="new"?[...list,{id:uid(),...form}]:list.map(g=>g.id===edit?{...g,...form}:g);
-    setList(next);onSaveMGs(next);setEdit(null);
-  }
+  function save(){if(!form.name.trim())return;const next=edit==="new"?[...list,{id:uid(),...form}]:list.map(g=>g.id===edit?{...g,...form}:g);setList(next);onSaveMGs(next);setEdit(null);}
   return <div style={{padding:32,maxWidth:720}}>
     <div style={{fontSize:20,fontWeight:700,marginBottom:24}}>ตั้งค่าระบบ</div>
+    {/* Google Sheet status */}
+    <div style={card({padding:20,marginBottom:20})}>
+      <div style={{fontWeight:700,fontSize:14,marginBottom:10}}>🔗 Google Sheets Connection</div>
+      {GSheet.ok()
+        ?<div style={{fontSize:13,color:"#16a34a",display:"flex",alignItems:"center",gap:6}}>
+          <span style={{width:8,height:8,borderRadius:"50%",background:"#16a34a",display:"inline-block"}}/>
+          เชื่อมต่อแล้ว — ข้อมูลจะ Sync อัตโนมัติเมื่ออนุมัติ/รับเข้า</div>
+        :<div>
+          <div style={{fontSize:13,color:"#d97706",marginBottom:8}}>⚠ ยังไม่ได้เชื่อมต่อ Google Sheets</div>
+          <div style={{fontSize:12,color:C.sub,lineHeight:1.7}}>
+            1. เปิด Google Sheets สร้าง Sheet ใหม่<br/>
+            2. ไปที่ Extensions → Apps Script<br/>
+            3. วาง Code จากไฟล์ <code>google-apps-script.js</code><br/>
+            4. Deploy → New Deployment → Web app<br/>
+            5. นำ URL มาใส่ในตัวแปร <code>GAS_URL</code> ในไฟล์ HTML บรรทัดบนสุด</div></div>}
+    </div>
     <div style={card({padding:24})}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-        <div><div style={{fontWeight:700,fontSize:15}}>จัดการกลุ่มเครื่องจักร</div>
-          <div style={{fontSize:12,color:C.sub,marginTop:2}}>เพิ่ม / แก้ไข / ลบได้ที่นี่</div></div>
-        <button style={btn()} onClick={()=>{setForm({name:"",icon:"🤖",color:"#f59e0b"});setEdit("new");}}>+ เพิ่มกลุ่ม</button>
-      </div>
+        <div><div style={{fontWeight:700,fontSize:15}}>จัดการกลุ่มเครื่องจักร</div><div style={{fontSize:12,color:C.sub,marginTop:2}}>เพิ่ม / แก้ไข / ลบได้ที่นี่</div></div>
+        <button style={btn()} onClick={()=>{setForm({name:"",icon:"🤖",color:"#f59e0b"});setEdit("new");}}>+ เพิ่มกลุ่ม</button></div>
       {edit&&<div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:10,padding:20,marginBottom:20}}>
         <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>{edit==="new"?"เพิ่มกลุ่มใหม่":"แก้ไขกลุ่ม"}</div>
-        <div style={{marginBottom:12}}>
-          <span style={lbl()}>ชื่อกลุ่ม</span>
-          <input style={inp()} placeholder="Robot ABB..." value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/>
-        </div>
-        <div style={{marginBottom:12}}>
-          <span style={lbl()}>ไอคอน</span>
-          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-            {ICON_OPTS.map(ic=><div key={ic}
-              style={{width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,borderRadius:6,cursor:"pointer",
-                border:form.icon===ic?`2px solid ${C.primary}`:`1px solid ${C.border}`,background:form.icon===ic?C.primaryL:"#fff"}}
-              onClick={()=>setForm(f=>({...f,icon:ic}))}>{ic}</div>)}
-          </div>
-        </div>
-        <div style={{marginBottom:16}}>
-          <span style={lbl()}>สี</span>
-          <div style={{display:"flex",gap:8}}>
-            {COLOR_OPTS.map(cl=><div key={cl}
-              style={{width:28,height:28,borderRadius:"50%",background:cl,cursor:"pointer",
-                outline:form.color===cl?`3px solid ${C.text}`:"none",outlineOffset:2}}
-              onClick={()=>setForm(f=>({...f,color:cl}))}/>)}
-          </div>
-        </div>
-        <div style={{display:"flex",gap:8}}>
-          <button style={btn()} onClick={save}>✓ บันทึก</button>
-          <button style={btn("ghost")} onClick={()=>setEdit(null)}>ยกเลิก</button>
-        </div>
-      </div>}
+        <div style={{marginBottom:12}}><span style={lbl()}>ชื่อกลุ่ม</span><input style={inp()} placeholder="Robot ABB..." value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></div>
+        <div style={{marginBottom:12}}><span style={lbl()}>ไอคอน</span>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{ICON_OPTS.map(ic=><div key={ic}
+            style={{width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,borderRadius:6,cursor:"pointer",
+              border:form.icon===ic?`2px solid ${C.primary}`:`1px solid ${C.border}`,background:form.icon===ic?C.primaryL:"#fff"}}
+            onClick={()=>setForm(f=>({...f,icon:ic}))}>{ic}</div>)}</div></div>
+        <div style={{marginBottom:16}}><span style={lbl()}>สี</span>
+          <div style={{display:"flex",gap:8}}>{COLOR_OPTS.map(cl=><div key={cl}
+            style={{width:28,height:28,borderRadius:"50%",background:cl,cursor:"pointer",
+              outline:form.color===cl?`3px solid ${C.text}`:"none",outlineOffset:2}}
+            onClick={()=>setForm(f=>({...f,color:cl}))}/>)}</div></div>
+        <div style={{display:"flex",gap:8}}><button style={btn()} onClick={save}>✓ บันทึก</button><button style={btn("ghost")} onClick={()=>setEdit(null)}>ยกเลิก</button></div></div>}
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
-        {list.map((g,i)=><div key={g.id} style={{display:"flex",alignItems:"center",gap:12,
-          padding:"12px 14px",border:`1px solid ${C.border}`,borderRadius:8,background:"#fff"}}>
+        {list.map((g,i)=><div key={g.id} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",border:`1px solid ${C.border}`,borderRadius:8,background:"#fff"}}>
           <div style={{width:34,height:34,borderRadius:8,background:`${g.color}18`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{g.icon}</div>
           <div style={{flex:1}}><div style={{fontWeight:600,fontSize:13}}>{g.name}</div><div style={{fontSize:11,color:C.muted}}>ลำดับที่ {i+1}</div></div>
           <div style={{width:12,height:12,borderRadius:"50%",background:g.color}}/>
           <button style={btn("outline",{fontSize:12,padding:"6px 12px"})} onClick={()=>{setForm({name:g.name,icon:g.icon,color:g.color});setEdit(g.id);}}>✎</button>
           <button style={btn("danger",{fontSize:12,padding:"6px 12px"})} onClick={()=>{const n=list.filter(x=>x.id!==g.id);setList(n);onSaveMGs(n);}}>✕</button>
-        </div>)}
-      </div>
-    </div>
-  </div>;
+        </div>)}</div></div></div>;
 }
 
-// ─── Modals ────────────────────────────────────────────────
-function LoginModal({onLogin,onClose}) {
-  const [u,setU]=useState(""); const [p,setP]=useState(""); const [err,setErr]=useState("");
-  function tryLogin(){
-    const users=getUsers(); const found=users.find(x=>x.username===u.trim()&&x.password===p);
-    if(!found){setErr("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง");return;} onLogin(found);
-  }
-  return <div style={MOD}><div style={MODB(400)}>
-    <div style={{textAlign:"center",marginBottom:24}}>
-      <div style={{fontSize:36,marginBottom:8}}>🔑</div>
-      <div style={{fontSize:18,fontWeight:700}}>เข้าสู่ระบบ</div>
-    </div>
-    <div style={{marginBottom:12}}>
-      <span style={lbl()}>ชื่อผู้ใช้</span>
-      <input style={inp()} placeholder="username" value={u} onChange={e=>setU(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
-    </div>
-    <div style={{marginBottom:8}}>
-      <span style={lbl()}>รหัสผ่าน</span>
-      <input type="password" style={inp()} placeholder="password" value={p} onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
-    </div>
+// ═══════════════════════════════════════════════════════════
+//  MODALS
+// ═══════════════════════════════════════════════════════════
+function LoginModal({onLogin,onClose}){
+  const [u,setU]=useState("");const [p,setP]=useState("");const [err,setErr]=useState("");
+  function tryLogin(){const users=getUsers();const found=users.find(x=>x.username===u.trim()&&x.password===p);
+    if(!found){setErr("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง");return;}onLogin(found);}
+  return <div style={MOD}><div className="anim-fade" style={MODB(400)}>
+    <div style={{textAlign:"center",marginBottom:24}}><div style={{fontSize:36,marginBottom:8}}>🔑</div><div style={{fontSize:18,fontWeight:700}}>เข้าสู่ระบบ</div></div>
+    <div style={{marginBottom:12}}><span style={lbl()}>ชื่อผู้ใช้</span><input style={inp()} placeholder="username" value={u} onChange={e=>setU(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/></div>
+    <div style={{marginBottom:8}}><span style={lbl()}>รหัสผ่าน</span><input type="password" style={inp()} placeholder="password" value={p} onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/></div>
     {err&&<div style={{color:"#dc2626",fontSize:12,marginBottom:10}}>⚠ {err}</div>}
     <div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:8,padding:12,marginBottom:16,fontSize:12}}>
       <div style={{fontWeight:600,marginBottom:4,color:C.sub}}>บัญชีทดสอบ</div>
       <div>👷 ผู้ปฏิบัติงาน: <code>MTN</code> / <code>1234</code></div>
-      <div style={{marginTop:4}}>👔 ผู้อนุมัติ: <code>ENG</code> / <code>Admin</code></div>
-    </div>
+      <div style={{marginTop:4}}>👔 ผู้อนุมัติ: <code>ENG</code> / <code>Admin</code></div></div>
     <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:12})}} onClick={tryLogin}>เข้าสู่ระบบ</button>
     <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
   </div></div>;
 }
-
-function StockModal({part,mode,mg,session,onWithdraw,onReceive,onClose}) {
-  const [qty,setQty]=useState(1); const [note,setNote]=useState(""); const isW=mode==="withdraw";
-  return <div style={MOD}><div style={MODB(460)}>
+function StockModal({part,mode,mg,session,onWithdraw,onReceive,onClose}){
+  const [qty,setQty]=useState(1);const [note,setNote]=useState("");const isW=mode==="withdraw";
+  return <div style={MOD}><div className="anim-fade" style={MODB(460)}>
     <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>{isW?"▼ ขอเบิก":"▲ รับเข้า"} Spare Part</div>
     {mg&&<div style={{fontSize:12,color:mg.color,fontWeight:600,marginBottom:4}}>{mg.icon} {mg.name}</div>}
     <div style={{fontSize:13,color:C.sub,marginBottom:16}}>{part.name} · คงเหลือ <strong>{part.stock}</strong> {part.unit}</div>
     {isW&&<div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:10,marginBottom:14,fontSize:12,color:"#1e40af"}}>
       📋 คำขอเบิกจะถูกส่งให้ผู้อนุมัติก่อน — Stock จะถูกตัดหลังได้รับการอนุมัติ</div>}
-    <div style={{marginBottom:12}}>
-      <span style={lbl()}>จำนวน</span>
-      <input type="number" min={1} max={isW?part.stock:99999} style={{...inp({width:120})}} value={qty} onChange={e=>setQty(+e.target.value||1)}/>
-    </div>
-    <div style={{marginBottom:20}}>
-      <span style={lbl()}>หมายเหตุ</span>
-      <input style={inp()} placeholder="ระบุงาน หรือเหตุผล..." value={note} onChange={e=>setNote(e.target.value)}/>
-    </div>
+    <div style={{marginBottom:12}}><span style={lbl()}>จำนวน</span>
+      <input type="number" min={1} max={isW?part.stock:99999} style={{...inp({width:120})}} value={qty} onChange={e=>setQty(+e.target.value||1)}/></div>
+    <div style={{marginBottom:20}}><span style={lbl()}>หมายเหตุ</span><input style={inp()} placeholder="ระบุงาน หรือเหตุผล..." value={note} onChange={e=>setNote(e.target.value)}/></div>
     <div style={{display:"flex",gap:8}}>
       <button style={{...btn(isW?"primary":"success",{flex:1,justifyContent:"center"})}}
-        onClick={()=>isW?onWithdraw(part.id,qty,note):onReceive(part.id,qty,note)}>
-        ✓ {isW?"ส่งคำขอเบิก":"รับเข้า"} {qty} {part.unit}</button>
-      <button style={btn("ghost")} onClick={onClose}>ยกเลิก</button>
-    </div>
+        onClick={()=>isW?onWithdraw(part.id,qty,note):onReceive(part.id,qty,note)}>✓ {isW?"ส่งคำขอเบิก":"รับเข้า"} {qty} {part.unit}</button>
+      <button style={btn("ghost")} onClick={onClose}>ยกเลิก</button></div>
   </div></div>;
 }
-
-function QRModal({part,mg,onClose}) {
-  return <div style={MOD} onClick={onClose}><div style={{...MODB(360),textAlign:"center"}} onClick={e=>e.stopPropagation()}>
+function QRModal({part,mg,onClose}){
+  return <div style={MOD} onClick={onClose}><div className="anim-fade" style={{...MODB(360),textAlign:"center"}} onClick={e=>e.stopPropagation()}>
     {mg&&<div style={{fontSize:12,color:mg.color,fontWeight:600,marginBottom:4}}>{mg.icon} {mg.name}</div>}
     <div style={{fontWeight:700,fontSize:16,marginBottom:2}}>{part.name}</div>
     <div style={{fontSize:12,color:C.sub,marginBottom:20}}>{part.partCode} · {part.loc}</div>
     <div style={{display:"flex",justifyContent:"center",marginBottom:16}}>
-      <QR value={`SPAREPART:${part.id}:${part.partCode}`} size={180}/>
-    </div>
+      <QR value={`SPAREPART:${part.id}:${part.partCode}`} size={180}/></div>
     <code style={{fontSize:11,color:C.muted,display:"block",marginBottom:20}}>SPAREPART:{part.id}:{part.partCode}</code>
     <button style={{...btn("primary",{width:"100%",justifyContent:"center"})}} onClick={()=>window.print()}>⎙ Print QR</button>
     <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ปิด</button>
   </div></div>;
 }
-
-function AddPartModal({mgs,onAdd,onClose}) {
+function AddPartModal({mgs,onAdd,onClose}){
   const [f,setF]=useState({partCode:"",name:"",desc:"",unit:"ชิ้น",stock:0,min:5,max:100,loc:"",cat:"Bearing",mgId:mgs[0]?.id||""});
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
-  return <div style={MOD}><div style={MODB(520)}>
+  return <div style={MOD}><div className="anim-fade" style={MODB(520)}>
     <div style={{fontWeight:700,fontSize:16,marginBottom:20}}>เพิ่ม Spare Part ใหม่</div>
-    <div style={{marginBottom:14}}>
-      <span style={lbl()}>เครื่องจักร / กลุ่ม <span style={{color:"#dc2626"}}>*</span></span>
-      <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-        {mgs.map(mg=>{const act=f.mgId===mg.id; return <div key={mg.id}
-          style={{display:"flex",alignItems:"center",gap:4,padding:"6px 12px",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:600,
-            background:act?`${mg.color}18`:"#f3f4f6",border:`2px solid ${act?mg.color:"transparent"}`,color:act?mg.color:C.sub}}
-          onClick={()=>s("mgId",mg.id)}>{mg.icon} {mg.name}</div>;})}
-      </div>
-    </div>
+    <div style={{marginBottom:14}}><span style={lbl()}>เครื่องจักร / กลุ่ม <span style={{color:"#dc2626"}}>*</span></span>
+      <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{mgs.map(mg=>{const act=f.mgId===mg.id;return <div key={mg.id}
+        style={{display:"flex",alignItems:"center",gap:4,padding:"6px 12px",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:600,
+          background:act?`${mg.color}18`:"#f3f4f6",border:`2px solid ${act?mg.color:"transparent"}`,color:act?mg.color:C.sub}}
+        onClick={()=>s("mgId",mg.id)}>{mg.icon} {mg.name}</div>;})}</div></div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
-      {[["partCode","รหัส Part","BRG-6205"],["name","ชื่อ Spare Part","Bearing 6205"]].map(([k,l,ph])=>(
-        <div key={k}><span style={lbl()}>{l}</span><input style={inp()} placeholder={ph} value={f[k]} onChange={e=>s(k,e.target.value)}/></div>
-      ))}
-    </div>
-    <div style={{marginBottom:12}}>
-      <span style={lbl()}>คำอธิบาย</span>
-      <input style={inp()} placeholder="รายละเอียด..." value={f.desc} onChange={e=>s("desc",e.target.value)}/>
-    </div>
+      {[["partCode","รหัส Part","BRG-6205"],["name","ชื่อ Spare Part","Bearing 6205"]].map(([k,l,ph])=>
+        <div key={k}><span style={lbl()}>{l}</span><input style={inp()} placeholder={ph} value={f[k]} onChange={e=>s(k,e.target.value)}/></div>)}</div>
+    <div style={{marginBottom:12}}><span style={lbl()}>คำอธิบาย</span><input style={inp()} placeholder="รายละเอียด..." value={f.desc} onChange={e=>s("desc",e.target.value)}/></div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
       <div><span style={lbl()}>หน่วย</span><input style={inp()} placeholder="ชิ้น / เส้น..." value={f.unit} onChange={e=>s("unit",e.target.value)}/></div>
-      <div><span style={lbl()}>หมวดหมู่</span>
-        <select style={{...inp()}} value={f.cat} onChange={e=>s("cat",e.target.value)}>
-          {PART_CATS.map(c=><option key={c}>{c}</option>)}
-        </select>
-      </div>
-    </div>
+      <div><span style={lbl()}>หมวดหมู่</span><select style={{...inp()}} value={f.cat} onChange={e=>s("cat",e.target.value)}>{PART_CATS.map(c=><option key={c}>{c}</option>)}</select></div></div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
-      {[["stock","Stock เริ่มต้น"],["min","Min"],["max","Max"]].map(([k,l])=>(
-        <div key={k}><span style={lbl()}>{l}</span><input type="number" style={inp()} value={f[k]} onChange={e=>s(k,e.target.value)}/></div>
-      ))}
-    </div>
-    <div style={{marginBottom:20}}>
-      <span style={lbl()}>ตำแหน่งชั้นวาง</span>
-      <input style={inp()} placeholder="A-01, B-03..." value={f.loc} onChange={e=>s("loc",e.target.value)}/>
-    </div>
+      {[["stock","Stock เริ่มต้น"],["min","Min"],["max","Max"]].map(([k,l])=>
+        <div key={k}><span style={lbl()}>{l}</span><input type="number" style={inp()} value={f[k]} onChange={e=>s(k,e.target.value)}/></div>)}</div>
+    <div style={{marginBottom:20}}><span style={lbl()}>ตำแหน่งชั้นวาง</span><input style={inp()} placeholder="A-01, B-03..." value={f.loc} onChange={e=>s("loc",e.target.value)}/></div>
     <div style={{display:"flex",gap:8}}>
-      <button style={{...btn("primary",{flex:1,justifyContent:"center"})}}
-        onClick={()=>{if(!f.partCode||!f.name||!f.mgId)return;onAdd(f);}}>✓ บันทึกและ Gen QR Code</button>
-      <button style={btn("ghost")} onClick={onClose}>ยกเลิก</button>
-    </div>
+      <button style={{...btn("primary",{flex:1,justifyContent:"center"})}} onClick={()=>{if(!f.partCode||!f.name||!f.mgId)return;onAdd(f);}}>✓ บันทึกและ Gen QR Code</button>
+      <button style={btn("ghost")} onClick={onClose}>ยกเลิก</button></div>
   </div></div>;
 }
 
-// Mount
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
   </script>
 </body>
@@ -941,4 +864,4 @@ HTMLEOF
 echo "Done — $(wc -c < /mnt/user-data/outputs/sparetrack.html) bytes"
 Output
 
-Done — 60466 bytes
+Done — 65536 bytes
