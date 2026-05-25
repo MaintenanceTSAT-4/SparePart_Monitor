@@ -1,4 +1,3 @@
-cat > /mnt/user-data/outputs/sparetrack.html << 'HTMLEOF'
 <!DOCTYPE html>
 <html lang="th">
 <head>
@@ -42,26 +41,15 @@ const ICON_OPTS  = ["🤖","🦾","⚡","🔥","💧","⚙️","🔩","🏭","�
 const COLOR_OPTS = ["#f59e0b","#10b981","#3b82f6","#ef4444","#8b5cf6","#f97316","#ec4899","#06b6d4","#84cc16","#6b7280"];
 
 const DEFAULT_USERS = [
-  { id:"u1", username:"somchai", name:"สมชาย มีชัย",   role:"user",     dept:"Maintenance", password:"1234" },
-  { id:"u2", username:"wilai",   name:"วิไล สุขใจ",    role:"user",     dept:"Production",  password:"1234" },
-  { id:"u3", username:"manager", name:"ผู้จัดการโรงงาน",role:"approver", dept:"Management",  password:"admin123" },
+  { id:"u1", username:"MTN", name:"Maintenance",   role:"User",     dept:"Maintenance", password:"1234" },
+  { id:"u2", username:"MTN01",   name:"Maintenance",    role:"User",     dept:"Maintenance",  password:"1234" },
+  { id:"u3", username:"ENG", name:"Engineer",role:"Approver", dept:"Management",  password:"Admin" },
 ];
 
 const now = new Date().toISOString();
 const INIT_PARTS = [
   { id:"p1",  partCode:"ABB-BRG-6205", name:"Bearing 6205",        desc:"Deep groove ball bearing", unit:"ชิ้น", stock:45, min:10, max:100, loc:"A-01", cat:"Bearing", mgId:"mg1", createdAt:now },
   { id:"p2",  partCode:"ABB-SRV-001",  name:"Servo Motor ABB",     desc:"AC Servo motor 1.5kW",    unit:"ตัว",  stock:3,  min:2,  max:10,  loc:"A-02", cat:"Motor",   mgId:"mg1", createdAt:now },
-  { id:"p3",  partCode:"ABB-BLT-A40",  name:"V-Belt A40",          desc:"Classical V-belt A40",    unit:"เส้น", stock:12, min:5,  max:40,  loc:"A-03", cat:"Belt",    mgId:"mg1", createdAt:now },
-  { id:"p4",  partCode:"YSK-ENC-02",   name:"Encoder Yaskawa",     desc:"Incremental encoder",     unit:"ชิ้น", stock:8,  min:3,  max:20,  loc:"B-01", cat:"Sensor",  mgId:"mg2", createdAt:now },
-  { id:"p5",  partCode:"YSK-BRG-7200", name:"Bearing 7200",        desc:"Angular contact bearing", unit:"ชิ้น", stock:6,  min:4,  max:30,  loc:"B-02", cat:"Bearing", mgId:"mg2", createdAt:now },
-  { id:"p6",  partCode:"TRU-LNS-10",   name:"Lens 10\" Trulaser",  desc:"Focusing lens 10 inch",  unit:"ชิ้น", stock:4,  min:2,  max:15,  loc:"C-01", cat:"Other",   mgId:"mg3", createdAt:now },
-  { id:"p7",  partCode:"TRU-FLT-001",  name:"Filter Trulaser",     desc:"Dust filter cartridge",  unit:"ชิ้น", stock:7,  min:3,  max:20,  loc:"C-02", cat:"Filter",  mgId:"mg3", createdAt:now },
-  { id:"p8",  partCode:"FRN-TIP-15",   name:"Contact Tip Fronius", desc:"MIG welding contact tip", unit:"ชิ้น", stock:6,  min:10, max:200, loc:"D-01", cat:"Other",   mgId:"mg4", createdAt:now },
-  { id:"p9",  partCode:"FRN-NOZ-001",  name:"Gas Nozzle Fronius",  desc:"MIG gas nozzle",         unit:"ชิ้น", stock:14, min:10, max:100, loc:"D-02", cat:"Other",   mgId:"mg4", createdAt:now },
-  { id:"p10", partCode:"HYD-SEL-32",   name:"Oil Seal 32x52",      desc:"TC type hydraulic seal", unit:"ชิ้น", stock:12, min:5,  max:60,  loc:"E-01", cat:"Seal",    mgId:"mg5", createdAt:now },
-  { id:"p11", partCode:"HYD-PMP-001",  name:"Hydraulic Pump",      desc:"Gear pump 10cc/rev",     unit:"ตัว",  stock:2,  min:1,  max:5,   loc:"E-02", cat:"Pump",    mgId:"mg5", createdAt:now },
-  { id:"p12", partCode:"BND-BLT-B50",  name:"V-Belt B50 Bending",  desc:"Classical V-belt B50",   unit:"เส้น", stock:8,  min:10, max:50,  loc:"F-01", cat:"Belt",    mgId:"mg6", createdAt:now },
-  { id:"p13", partCode:"PRS-FLT-HYD",  name:"Hydraulic Filter",    desc:"High pressure 10mu",     unit:"ชิ้น", stock:15, min:5,  max:40,  loc:"G-01", cat:"Filter",  mgId:"mg7", createdAt:now },
   { id:"p14", partCode:"PRS-VLV-SOL",  name:"Solenoid Valve",      desc:"24VDC solenoid valve",   unit:"ตัว",  stock:3,  min:2,  max:10,  loc:"G-02", cat:"Valve",   mgId:"mg7", createdAt:now },
 ];
 
@@ -90,10 +78,10 @@ function stockStatus(p) {
   return "ok";
 }
 const statusCfg = {
-  critical:{ label:"วิกฤต",    bg:"#fef2f2", color:"#dc2626", border:"#fca5a5" },
-  low:     { label:"ใกล้หมด",  bg:"#fffbeb", color:"#d97706", border:"#fcd34d" },
-  over:    { label:"เกิน Max", bg:"#eff6ff", color:"#2563eb", border:"#93c5fd" },
-  ok:      { label:"ปกติ",     bg:"#f0fdf4", color:"#16a34a", border:"#86efac" },
+  critical:{ label:"Critical",    bg:"#fef2f2", color:"#dc2626", border:"#fca5a5" },
+  low:     { label:"Low",  bg:"#fffbeb", color:"#d97706", border:"#fcd34d" },
+  over:    { label:"Over", bg:"#eff6ff", color:"#2563eb", border:"#93c5fd" },
+  ok:      { label:"Normal",     bg:"#f0fdf4", color:"#16a34a", border:"#86efac" },
 };
 function sBadge(st) {
   return { display:"inline-block",padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:600,
