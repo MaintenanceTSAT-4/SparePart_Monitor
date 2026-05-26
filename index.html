@@ -29,7 +29,7 @@ const { useState, useEffect, useRef } = React;
 // ═══════════════════════════════════════════════════════════
 //  ★ GOOGLE APPS SCRIPT URL — ใส่ URL ที่นี่ ★
 // ═══════════════════════════════════════════════════════════
-const GAS_URL = "https://script.google.com/macros/s/AKfycbyebQfSp4QKUkyfYoGC56Oghy9tzuSqk4yA81QIBEnTkzTnJHlb40OGpKyzOV7N869eog/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbz6TJq7LWDGFbYrzfryNvqN9SKahuaRj7pSH2HMaV5QaOYQ9Tn5M8SdtOgcyntO4wCN5g/exec";
 
 // ═══════════════════════════════════════════════════════════
 //  ★ QR SCAN: วิธีทำให้สแกนได้จริง
@@ -183,17 +183,19 @@ function App(){
     const params=new URLSearchParams(window.location.search);
     const scanCode=params.get("scan");
     if(scanCode){
-      // ลบ ?scan= ออกจาก URL bar (ไม่ให้ค้างอยู่)
       window.history.replaceState({},"",APP_URL);
-      // หา Part แล้วเด้ง popup
       setTimeout(()=>{
         const allParts=getParts();
-        const p=allParts.find(x=>x.partCode===scanCode||x.id===scanCode);
+        const codeLower=scanCode.toLowerCase();
+        const p=allParts.find(x=>
+          x.partCode===scanCode || x.id===scanCode ||
+          x.partCode.toLowerCase()===codeLower
+        );
         if(p){
           setScanPopup(p);
           setPage("scan");
         } else {
-          alert("ไม่พบ Spare Part: "+scanCode);
+          alert("ไม่พบ Spare Part: "+scanCode+"\n\nกรุณาตรวจสอบว่า Part Code ถูกต้อง");
         }
       },300);
     }
@@ -254,8 +256,13 @@ function App(){
 
   function doAddPart(data){
     const ps=getParts();
-    ps.push({id:uid(),...data,stock:+data.stock,min:+data.min,max:+data.max,createdAt:new Date().toISOString()});
-    store(KEYS.parts,ps);refresh();notify(`เพิ่ม ${data.name} สำเร็จ`);setAddM(false);
+    const newPart={id:uid(),...data,stock:+data.stock,min:+data.min,max:+data.max,createdAt:new Date().toISOString()};
+    ps.push(newPart);
+    store(KEYS.parts,ps);
+    // ★ refresh ก่อนปิด modal — ให้ parts state มี part ใหม่ก่อน
+    setParts(getParts());setTxs(getTx());setMgs(getMGs());setPending(getPending());
+    notify(`เพิ่ม ${data.name} สำเร็จ — QR Code พร้อมใช้งาน`);
+    setAddM(false);
     GSheet.syncStock(getParts(),getMGs());
   }
 
@@ -278,15 +285,27 @@ function App(){
     a.download="spare_report.csv";a.click();notify("Export สำเร็จ");
   }
 
-  // QR Scan handler
+  // QR Scan handler — ★ ดึงข้อมูลจาก localStorage ตรงๆ ทุกครั้ง ★
   function handleScanQR(val){
     const v=val.trim();
+    if(!v) return;
     let code=v;
     if(v.startsWith("SPAREPART:")) code=v.split(":")[2]||v.split(":")[1];
-    // ลอง match ด้วย partCode ก่อน แล้วค่อย id
-    const p=getParts().find(x=>x.partCode===code||x.partCode===v||x.id===code||x.id===v);
-    if(p) setScanPopup(p);
-    else notify("ไม่พบ Spare Part: "+v,"err");
+    // ★ อ่านจาก localStorage ใหม่ทุกครั้ง — แก้ปัญหา Part ใหม่ที่เพิ่งสร้างหาไม่เจอ
+    const freshParts=getParts();
+    const cLower=code.toLowerCase(), vLower=v.toLowerCase();
+    const p=freshParts.find(x=>
+      x.partCode===code || x.partCode===v ||
+      x.partCode.toLowerCase()===cLower || x.partCode.toLowerCase()===vLower ||
+      x.id===code || x.id===v
+    );
+    if(p){
+      setScanPopup(p);
+      // ★ refresh state ด้วย เผื่อ parts state ยังไม่อัปเดต
+      refresh();
+    } else {
+      notify("ไม่พบ Spare Part: "+v,"err");
+    }
   }
 
   const mgParts=selMG?parts.filter(p=>p.mgId===selMG):parts;
@@ -870,18 +889,68 @@ function SettingsPage({mgs,parts,mgMap,onSaveMGs,onDeletePart}){
 // ═══════════════════════════════════════════════════════════
 function LoginModal({onLogin,onClose}){
   const [u,setU]=useState("");const [p,setP]=useState("");const [err,setErr]=useState("");
-  function tryLogin(){const users=getUsers();const found=users.find(x=>x.username===u.trim()&&x.password===p);
-    if(!found){setErr("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง");return;}onLogin(found);}
+  const [needPw,setNeedPw]=useState(false);const [foundUser,setFoundUser]=useState(null);
+
+  function tryLogin(){
+    const users=getUsers();
+    // Step 1: หา user จาก username
+    const found=users.find(x=>x.username===u.trim());
+    if(!found){setErr("ไม่พบรหัสพนักงานนี้ในระบบ");return;}
+
+    // Step 2: ถ้าเป็น approver → ต้องใส่ password
+    if(found.role.toLowerCase()==="approver"){
+      if(!needPw){
+        // ครั้งแรก: แสดงช่อง password
+        setNeedPw(true);setFoundUser(found);setErr("");return;
+      }
+      // ครั้งที่สอง: ตรวจ password
+      if(found.password!==p){setErr("รหัสผ่านไม่ถูกต้อง");return;}
+    }
+    // User ทั่วไป → เข้าได้เลย ไม่ต้อง password
+    onLogin(found);
+  }
+
+  function handleBack(){setNeedPw(false);setFoundUser(null);setP("");setErr("");}
+
   return <div style={MOD}><div className="anim-fade" style={MODB(400)}>
-    <div style={{textAlign:"center",marginBottom:24}}><div style={{fontSize:36,marginBottom:8}}>🔑</div><div style={{fontSize:18,fontWeight:700}}>เข้าสู่ระบบ</div></div>
-    <div style={{marginBottom:12}}><span style={lbl()}>ชื่อผู้ใช้</span><input style={inp()} placeholder="username" value={u} onChange={e=>setU(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/></div>
-    <div style={{marginBottom:8}}><span style={lbl()}>รหัสผ่าน</span><input type="password" style={inp()} placeholder="password" value={p} onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/></div>
-    {err&&<div style={{color:"#dc2626",fontSize:12,marginBottom:10}}>⚠ {err}</div>}
+    <div style={{textAlign:"center",marginBottom:24}}>
+      <div style={{fontSize:36,marginBottom:8}}>{needPw?"🔒":"👷"}</div>
+      <div style={{fontSize:18,fontWeight:700}}>{needPw?"ยืนยันตัวตนผู้อนุมัติ":"เข้าสู่ระบบ"}</div>
+      {needPw&&<div style={{fontSize:13,color:C.primary,marginTop:6,fontWeight:600}}>👔 {foundUser?.name} ({foundUser?.dept})</div>}
+    </div>
+
+    {!needPw?<>
+      {/* User ทั่วไป: ใส่แค่รหัสพนักงาน */}
+      <div style={{marginBottom:14}}>
+        <span style={lbl()}>รหัสพนักงาน</span>
+        <input style={{...inp({fontSize:16,padding:"12px"})}} placeholder="ใส่รหัสพนักงาน เช่น MTN, MTN01..."
+          value={u} onChange={e=>setU(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()} autoFocus/>
+      </div>
+      <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,marginBottom:6,fontSize:12,color:"#166534"}}>
+        💡 ผู้ปฏิบัติงาน — ใส่รหัสพนักงานอย่างเดียว ไม่ต้องใส่รหัสผ่าน</div>
+      <div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:8,padding:12,marginBottom:16,fontSize:12,color:C.sub}}>
+        ผู้อนุมัติจะต้องใส่รหัสผ่านเพิ่มเติม</div>
+    </>:<>
+      {/* Approver: ใส่ password */}
+      <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:12,marginBottom:14,fontSize:12,color:"#1e40af"}}>
+        🔐 บัญชีนี้เป็นผู้อนุมัติ กรุณาใส่รหัสผ่านเพื่อยืนยัน</div>
+      <div style={{marginBottom:14}}>
+        <span style={lbl()}>รหัสผ่าน</span>
+        <input type="password" style={{...inp({fontSize:16,padding:"12px"})}} placeholder="ใส่รหัสผ่าน..."
+          value={p} onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()} autoFocus/>
+      </div>
+    </>}
+
+    {err&&<div style={{color:"#dc2626",fontSize:12,marginBottom:10,background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:6,padding:"8px 12px"}}>⚠ {err}</div>}
+
     <div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:8,padding:12,marginBottom:16,fontSize:12}}>
       <div style={{fontWeight:600,marginBottom:4,color:C.sub}}>บัญชีทดสอบ</div>
-      <div>👷 ผู้ปฏิบัติงาน: <code>MTN</code> / <code>1234</code></div>
-      <div style={{marginTop:4}}>👔 ผู้อนุมัติ: <code>ENG</code> / <code>Admin</code></div></div>
-    <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:12})}} onClick={tryLogin}>เข้าสู่ระบบ</button>
+      <div>👷 ผู้ปฏิบัติงาน: <code>MTN</code> หรือ <code>MTN01</code> (ไม่ต้องใส่รหัสผ่าน)</div>
+      <div style={{marginTop:4}}>👔 ผู้อนุมัติ: <code>ENG</code> (รหัสผ่าน: <code>Admin</code>)</div></div>
+
+    <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:12})}} onClick={tryLogin}>
+      {needPw?"🔐 ยืนยันเข้าสู่ระบบ":"เข้าสู่ระบบ"}</button>
+    {needPw&&<button style={{...btn("outline",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={handleBack}>← กลับ</button>}
     <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
   </div></div>;
 }
