@@ -29,7 +29,7 @@ const { useState, useEffect, useRef } = React;
 // ═══════════════════════════════════════════════════════════
 //  ★ GOOGLE APPS SCRIPT URL — ใส่ URL ที่นี่ ★
 // ═══════════════════════════════════════════════════════════
-const GAS_URL = "https://script.google.com/macros/s/AKfycbz6TJq7LWDGFbYrzfryNvqN9SKahuaRj7pSH2HMaV5QaOYQ9Tn5M8SdtOgcyntO4wCN5g/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzXIKPsDYued283Lt476MMiKIlp_BhyESzaKZ39qw-Z_li-N2yr2MfeAzBpcF8lkWcF5A/exec";
 
 // ═══════════════════════════════════════════════════════════
 //  ★ QR SCAN: วิธีทำให้สแกนได้จริง
@@ -175,6 +175,7 @@ function App(){
   const [stkM,setStkM]=useState(null);
   const [loginM,setLoginM]=useState(false);
   const [scanPopup,setScanPopup]=useState(null);
+  const [scanUnknown,setScanUnknown]=useState(null); // ★ Part Code จาก QR ที่ไม่อยู่ใน localStorage
   const [syncing,setSyncing]=useState(false);
 
   useEffect(()=>{
@@ -183,7 +184,7 @@ function App(){
     const params=new URLSearchParams(window.location.search);
     const scanCode=params.get("scan");
     if(scanCode){
-      window.history.replaceState({},"",APP_URL);
+      window.history.replaceState({},"",window.location.href.split("?")[0]);
       setTimeout(()=>{
         const allParts=getParts();
         const codeLower=scanCode.toLowerCase();
@@ -195,7 +196,10 @@ function App(){
           setScanPopup(p);
           setPage("scan");
         } else {
-          alert("ไม่พบ Spare Part: "+scanCode+"\n\nกรุณาตรวจสอบว่า Part Code ถูกต้อง");
+          // ★ Part ไม่อยู่ใน localStorage ของเครื่องนี้ (อาจเปิดจากมือถือเครื่องอื่น)
+          // → แสดง Quick Withdraw Mode ด้วย partCode จาก URL
+          setScanUnknown(scanCode);
+          setPage("scan");
         }
       },300);
     }
@@ -220,6 +224,15 @@ function App(){
       qty,note,requesterId:req?.id,requesterName:req?.name,createdAt:new Date().toISOString()});
     store(KEYS.pending,rows);refresh();
     notify(`ส่งคำขอเบิก ${p.name} x${qty} รอการอนุมัติ`);
+  }
+
+  // ★ สำหรับ Part ที่ไม่อยู่ใน localStorage (สแกนจากมือถือเครื่องอื่น)
+  function addPendingByCode(partCode,qty,note,req){
+    const rows=getPending();
+    rows.push({id:uid(),partId:"unknown",partCode:partCode,partName:partCode,mgId:"-",unit:"ชิ้น",
+      qty,note,requesterId:req?.id,requesterName:req?.name,createdAt:new Date().toISOString()});
+    store(KEYS.pending,rows);refresh();
+    notify(`ส่งคำขอเบิก ${partCode} x${qty} รอการอนุมัติ`);
   }
 
   async function approveAll(){
@@ -285,13 +298,12 @@ function App(){
     a.download="spare_report.csv";a.click();notify("Export สำเร็จ");
   }
 
-  // QR Scan handler — ★ ดึงข้อมูลจาก localStorage ตรงๆ ทุกครั้ง ★
+  // QR Scan handler — ★ รองรับทั้ง Part ที่อยู่ในระบบและไม่อยู่ ★
   function handleScanQR(val){
     const v=val.trim();
     if(!v) return;
     let code=v;
     if(v.startsWith("SPAREPART:")) code=v.split(":")[2]||v.split(":")[1];
-    // ★ อ่านจาก localStorage ใหม่ทุกครั้ง — แก้ปัญหา Part ใหม่ที่เพิ่งสร้างหาไม่เจอ
     const freshParts=getParts();
     const cLower=code.toLowerCase(), vLower=v.toLowerCase();
     const p=freshParts.find(x=>
@@ -301,10 +313,10 @@ function App(){
     );
     if(p){
       setScanPopup(p);
-      // ★ refresh state ด้วย เผื่อ parts state ยังไม่อัปเดต
       refresh();
     } else {
-      notify("ไม่พบ Spare Part: "+v,"err");
+      // ★ ไม่เจอใน localStorage → แสดง Quick Withdraw Mode
+      setScanUnknown(code);
     }
   }
 
@@ -411,6 +423,10 @@ function App(){
       {scanPopup&&<ScanWithdrawPopup part={scanPopup} mg={mgMap[scanPopup.mgId]} session={session}
         onSubmit={(qty,note)=>{addPending(scanPopup.id,qty,note,session);setScanPopup(null);}}
         onClose={()=>setScanPopup(null)} onLoginNeeded={()=>{setScanPopup(null);setLoginM(true);}}/>}
+      {/* ★ Quick Withdraw — สำหรับ Part ที่สแกนจากมือถือแล้วไม่อยู่ใน localStorage ★ */}
+      {scanUnknown&&<QuickWithdrawPopup partCode={scanUnknown} session={session}
+        onSubmit={(qty,note)=>{addPendingByCode(scanUnknown,qty,note,session);setScanUnknown(null);}}
+        onClose={()=>setScanUnknown(null)} onLoginNeeded={()=>{setScanUnknown(null);setLoginM(true);}}/>}
     </div>
   );
 }
@@ -634,6 +650,57 @@ function ScanWithdrawPopup({part,mg,session,onSubmit,onClose,onLoginNeeded}){
       ⚠ กรุณาเข้าสู่ระบบก่อนยื่นคำขอเบิก</div>}
     <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:14,fontSize:15,borderRadius:10})}}
       onClick={handleSubmit}>📋 ยื่นคำขอเบิก {qty} {part.unit}</button>
+    <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
+  </div></div>;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ★ QUICK WITHDRAW POPUP — สำหรับสแกนจากมือถือที่ไม่มีข้อมูลในเครื่อง
+//  เช่น PC เพิ่ม Part ไว้ใน localStorage → มือถือสแกน QR → มือถือไม่มี Part นั้น
+//  → แสดง Popup แบบ Quick Mode ให้เบิกได้เลย
+// ═══════════════════════════════════════════════════════════
+function QuickWithdrawPopup({partCode,session,onSubmit,onClose,onLoginNeeded}){
+  const [qty,setQty]=useState(1);
+  const [note,setNote]=useState("");
+  function handleSubmit(){if(!session){onLoginNeeded();return;}onSubmit(qty,note);}
+  return <div style={MOD}><div className="anim-fade" style={MODB(420)}>
+    <div style={{textAlign:"center",marginBottom:20}}>
+      <div style={{fontSize:48,marginBottom:10}}>📱</div>
+      <div style={{fontWeight:700,fontSize:18,marginBottom:6}}>สแกน QR สำเร็จ</div>
+      <div style={{background:C.primaryL,border:"1px solid #bfdbfe",borderRadius:8,padding:"10px 16px",
+        display:"inline-block",marginBottom:8}}>
+        <code style={{fontSize:16,fontWeight:700,color:C.primary}}>{partCode}</code>
+      </div>
+    </div>
+
+    <div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:8,padding:12,marginBottom:16,fontSize:12,color:"#92400e"}}>
+      💡 ข้อมูลรายละเอียดอยู่ในเครื่องหลัก — ที่นี่คุณสามารถยื่นคำขอเบิกได้เลย<br/>
+      ผู้อนุมัติจะเห็นรายการนี้ในใบอนุมัติ</div>
+
+    <div style={{marginBottom:14}}>
+      <span style={lbl()}>จำนวนที่ต้องการเบิก</span>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16}}>
+        <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}}
+          onClick={()=>setQty(Math.max(1,qty-1))}>−</button>
+        <input type="number" min={1}
+          style={{...inp({width:90,textAlign:"center",fontSize:28,fontWeight:700,borderRadius:10,padding:"8px"})}}
+          value={qty} onChange={e=>setQty(Math.max(1,+e.target.value||1))}/>
+        <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}}
+          onClick={()=>setQty(qty+1)}>+</button>
+      </div>
+    </div>
+
+    <div style={{marginBottom:16}}>
+      <span style={lbl()}>หมายเหตุ (ไม่บังคับ)</span>
+      <input style={inp()} placeholder="ระบุงาน / เครื่องจักรที่ใช้..." value={note} onChange={e=>setNote(e.target.value)}
+        onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}}/>
+    </div>
+
+    {!session&&<div style={{background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:8,padding:12,marginBottom:14,fontSize:12,color:"#991b1b"}}>
+      ⚠ กรุณาเข้าสู่ระบบก่อนยื่นคำขอเบิก</div>}
+
+    <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:14,fontSize:15,borderRadius:10})}}
+      onClick={handleSubmit}>📋 ยื่นคำขอเบิก {qty} ชิ้น</button>
     <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
   </div></div>;
 }
