@@ -28,7 +28,7 @@ const { useState, useEffect, useRef } = React;
 // ===========================================================
 //  GOOGLE APPS SCRIPT URL  (ใส่ URL ที่ Deploy แล้วจาก google-apps-script-v2.gs)
 // ===========================================================
-const GAS_URL = "https://script.google.com/macros/s/AKfycbxMvUK0J-MKh_jfm5KRdBMFCFj6yw2s4ZzAYOhe1E_kCwF4VyyUy0YPHwCK3F_59pcOKg/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwkCm60bsQXbTNM7qztX2EThXuNYfEl2cgzhn2KdkAu5spuXSGYyqkY17uw3Z6fhuUTtA/exec";
 // ===========================================================
 //  QR SCAN URL
 // ===========================================================
@@ -250,6 +250,50 @@ function App(){
     initDB();refresh();
     const cached = getCachedSession();
     if(cached && cached.user) setSession(cached.user);
+
+    // ★★★ ตรวจ ?scan= "ทันที" ก่อนทำ Cloud pull เพื่อให้ popup เด้งเร็วที่สุด ★★★
+    const params=new URLSearchParams(window.location.search);
+    const scanCode=params.get("scan");
+    const findPartByCode = (code)=>{
+      const allParts=getParts();
+      const cLower=code.toLowerCase();
+      return allParts.find(x=>
+        x.partCode===code || x.id===code ||
+        (x.partCode && x.partCode.toLowerCase()===cLower));
+    };
+    if(scanCode){
+      window.history.replaceState({},"",window.location.href.split("?")[0]);
+      // Step 1: ลองหาใน localStorage ก่อน → เด้ง popup ทันที
+      const p = findPartByCode(scanCode);
+      if(p){
+        setScanPopup(p);
+        setPage("scan");
+        notify(`📱 สแกน ${p.name} สำเร็จ`);
+      } else {
+        // Step 2: ถ้าไม่เจอ → ลองดึงจาก Cloud ก่อน แล้วเช็คอีกครั้ง
+        (async ()=>{
+          if(GSheet.ok()){
+            const r = await pullFromCloud();
+            if(r.ok){
+              refresh();
+              const p2 = findPartByCode(scanCode);
+              if(p2){
+                setScanPopup(p2);
+                setPage("scan");
+                notify(`📱 สแกน ${p2.name} สำเร็จ (จาก Cloud)`);
+                return;
+              }
+            }
+          }
+          // Step 3: หาไม่เจอจริงๆ → ใช้ Quick Withdraw (พิมพ์ Part Code มา)
+          setScanUnknown(scanCode);
+          setPage("scan");
+          notify(`📱 สแกน ${scanCode} (ไม่พบในฐานข้อมูล)`,"warn");
+        })();
+      }
+    }
+
+    // === Background: pull ข้อมูลล่าสุดจาก Cloud (ไม่ block scan) ===
     (async ()=>{
       if(GSheet.ok()){
         setSyncing(true);
@@ -261,20 +305,6 @@ function App(){
         } else {
           notify("ดึงข้อมูลจาก Cloud ล้มเหลว: "+(r.error||"-"),"warn");
         }
-      }
-      const params=new URLSearchParams(window.location.search);
-      const scanCode=params.get("scan");
-      if(scanCode){
-        window.history.replaceState({},"",window.location.href.split("?")[0]);
-        setTimeout(()=>{
-          const allParts=getParts();
-          const cLower=scanCode.toLowerCase();
-          const p=allParts.find(x=>
-            x.partCode===scanCode || x.id===scanCode ||
-            x.partCode.toLowerCase()===cLower);
-          if(p){ setScanPopup(p); setPage("scan"); }
-          else { setScanUnknown(scanCode); setPage("scan"); }
-        },300);
       }
     })();
     const onFocus = async ()=>{
@@ -730,16 +760,26 @@ function ScanWithdrawPopup({part,mg,session,remainingMs,onSubmit,onClose}){
       <input style={inp()} placeholder="ระบุงาน / เครื่องจักร..." value={note} onChange={e=>setNote(e.target.value)}/>
     </div>
     {needEmpId &&
-      <div style={{marginBottom:14,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:14}}>
-        <span style={{...lbl({color:"#1e40af"})}}>🔑 รหัสพนักงาน (จำไว้ 24 ชม.)</span>
-        <input style={{...inp({fontSize:16,padding:"10px 12px"})}} placeholder="เช่น MTN, MTN01..."
+      <div style={{marginBottom:14,background:"#eff6ff",border:"2px solid #3b82f6",borderRadius:10,padding:14,boxShadow:"0 0 0 3px rgba(59,130,246,.1)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+          <span style={{fontSize:18}}>🔑</span>
+          <span style={{fontSize:14,fontWeight:700,color:"#1e40af"}}>รหัสพนักงาน</span>
+          <span style={{marginLeft:"auto",fontSize:10,fontWeight:700,color:"#fff",background:"#3b82f6",borderRadius:20,padding:"3px 10px"}}>
+            ⏱ จำไว้ 24 ชม.
+          </span>
+        </div>
+        <input style={{...inp({fontSize:18,padding:"12px 14px",fontWeight:600,borderWidth:2,borderColor:"#bfdbfe"})}}
+          placeholder="เช่น MTN, MTN01..."
           value={empId} onChange={e=>{setEmpId(e.target.value);setEmpErr("");}}
           onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} autoFocus/>
-        {empErr && <div style={{color:"#dc2626",fontSize:11,marginTop:6,fontWeight:600}}>⚠ {empErr}</div>}
-        <div style={{fontSize:10,color:"#1e40af",marginTop:6}}>💡 ใส่ครั้งเดียว สแกนต่อไปไม่ต้องใส่อีก</div>
+        {empErr && <div style={{color:"#dc2626",fontSize:12,marginTop:8,fontWeight:600,background:"#fef2f2",padding:"6px 10px",borderRadius:6}}>⚠ {empErr}</div>}
+        <div style={{fontSize:11,color:"#1e40af",marginTop:8,padding:"8px 10px",background:"#dbeafe",borderRadius:6,lineHeight:1.6}}>
+          ✓ ใส่ครั้งเดียว → ระบบจะ <strong>จำรหัสนี้ไว้ 24 ชั่วโมง</strong><br/>
+          ✓ สแกน QR ต่อไปไม่ต้องใส่อีก จนกว่าจะครบ 24 ชม.
+        </div>
       </div>}
     <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:14,fontSize:15,borderRadius:10})}}
-      onClick={handleSubmit}>✓ ยืนยันเบิก {qty} {part.unit}</button>
+      onClick={handleSubmit}>✓ ยืนยันเบิก {qty} {part.unit}{needEmpId?" + จำรหัส 24 ชม.":""}</button>
     <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
   </div></div>;
 }
@@ -789,15 +829,26 @@ function QuickWithdrawPopup({partCode,session,remainingMs,onSubmit,onClose}){
       <input style={inp()} placeholder="ระบุงาน / เครื่องจักร..." value={note} onChange={e=>setNote(e.target.value)}/>
     </div>
     {needEmpId &&
-      <div style={{marginBottom:14,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:14}}>
-        <span style={{...lbl({color:"#1e40af"})}}>🔑 รหัสพนักงาน (จำไว้ 24 ชม.)</span>
-        <input style={{...inp({fontSize:16,padding:"10px 12px"})}} placeholder="เช่น MTN, MTN01..."
+      <div style={{marginBottom:14,background:"#eff6ff",border:"2px solid #3b82f6",borderRadius:10,padding:14,boxShadow:"0 0 0 3px rgba(59,130,246,.1)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+          <span style={{fontSize:18}}>🔑</span>
+          <span style={{fontSize:14,fontWeight:700,color:"#1e40af"}}>รหัสพนักงาน</span>
+          <span style={{marginLeft:"auto",fontSize:10,fontWeight:700,color:"#fff",background:"#3b82f6",borderRadius:20,padding:"3px 10px"}}>
+            ⏱ จำไว้ 24 ชม.
+          </span>
+        </div>
+        <input style={{...inp({fontSize:18,padding:"12px 14px",fontWeight:600,borderWidth:2,borderColor:"#bfdbfe"})}}
+          placeholder="เช่น MTN, MTN01..."
           value={empId} onChange={e=>{setEmpId(e.target.value);setEmpErr("");}}
           onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} autoFocus/>
-        {empErr && <div style={{color:"#dc2626",fontSize:11,marginTop:6,fontWeight:600}}>⚠ {empErr}</div>}
+        {empErr && <div style={{color:"#dc2626",fontSize:12,marginTop:8,fontWeight:600,background:"#fef2f2",padding:"6px 10px",borderRadius:6}}>⚠ {empErr}</div>}
+        <div style={{fontSize:11,color:"#1e40af",marginTop:8,padding:"8px 10px",background:"#dbeafe",borderRadius:6,lineHeight:1.6}}>
+          ✓ ใส่ครั้งเดียว → ระบบจะ <strong>จำรหัสนี้ไว้ 24 ชั่วโมง</strong><br/>
+          ✓ สแกน QR ต่อไปไม่ต้องใส่อีก จนกว่าจะครบ 24 ชม.
+        </div>
       </div>}
     <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:14,fontSize:15,borderRadius:10})}}
-      onClick={handleSubmit}>✓ ยืนยันเบิก {qty} ชิ้น</button>
+      onClick={handleSubmit}>✓ ยืนยันเบิก {qty} ชิ้น{needEmpId?" + จำรหัส 24 ชม.":""}</button>
     <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
   </div></div>;
 }
@@ -1083,12 +1134,21 @@ function StockModal({part,mode,mg,session,onWithdraw,onReceive,onClose}){
     <div style={{marginBottom:12}}><span style={lbl()}>จำนวน</span>
       <input type="number" min={1} max={isW?part.stock:99999} style={{...inp({width:120})}} value={qty} onChange={e=>setQty(+e.target.value||1)}/></div>
     <div style={{marginBottom:14}}><span style={lbl()}>หมายเหตุ</span><input style={inp()} placeholder="ระบุงาน..." value={note} onChange={e=>setNote(e.target.value)}/></div>
-    {needEmpId&&<div style={{marginBottom:14,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:12}}>
-      <span style={{...lbl({color:"#1e40af"})}}>🔑 รหัสพนักงาน (จำไว้ 24 ชม.)</span>
-      <input style={{...inp({fontSize:15})}} placeholder="เช่น MTN, MTN01..."
+    {needEmpId&&<div style={{marginBottom:14,background:"#eff6ff",border:"2px solid #3b82f6",borderRadius:10,padding:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+        <span style={{fontSize:18}}>🔑</span>
+        <span style={{fontSize:14,fontWeight:700,color:"#1e40af"}}>รหัสพนักงาน</span>
+        <span style={{marginLeft:"auto",fontSize:10,fontWeight:700,color:"#fff",background:"#3b82f6",borderRadius:20,padding:"3px 10px"}}>
+          ⏱ จำไว้ 24 ชม.
+        </span>
+      </div>
+      <input style={{...inp({fontSize:17,padding:"11px 14px",fontWeight:600,borderWidth:2,borderColor:"#bfdbfe"})}} placeholder="เช่น MTN, MTN01..."
         value={empId} onChange={e=>{setEmpId(e.target.value);setEmpErr("");}}
         onKeyDown={e=>{if(e.key==="Enter")handle();}}/>
-      {empErr && <div style={{color:"#dc2626",fontSize:11,marginTop:6,fontWeight:600}}>⚠ {empErr}</div>}
+      {empErr && <div style={{color:"#dc2626",fontSize:12,marginTop:8,fontWeight:600,background:"#fef2f2",padding:"6px 10px",borderRadius:6}}>⚠ {empErr}</div>}
+      <div style={{fontSize:11,color:"#1e40af",marginTop:8,padding:"6px 10px",background:"#dbeafe",borderRadius:6}}>
+        ✓ ใส่ครั้งเดียว → จำไว้ 24 ชม. สแกน QR ต่อไปไม่ต้องใส่อีก
+      </div>
     </div>}
     <div style={{display:"flex",gap:8}}>
       <button style={{...btn(isW?"primary":"success",{flex:1,justifyContent:"center"})}}
