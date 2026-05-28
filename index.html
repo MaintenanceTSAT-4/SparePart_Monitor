@@ -26,9 +26,9 @@
   <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef } = React;
 // ===========================================================
-//  GOOGLE APPS SCRIPT URL
+//  GOOGLE APPS SCRIPT URL  (ใส่ URL ที่ Deploy แล้วจาก google-apps-script-v2.gs)
 // ===========================================================
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwMgJXbeUNj-TfHA6MLZHLUNWmYuj5Df8NP1oEBt5cBQ5RVTosAnHpiwtIIhaeNC8lYVA/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxMvUK0J-MKh_jfm5KRdBMFCFj6yw2s4ZzAYOhe1E_kCwF4VyyUy0YPHwCK3F_59pcOKg/exec";
 // ===========================================================
 //  QR SCAN URL
 // ===========================================================
@@ -37,30 +37,47 @@ const _autoUrl = window.location.href.split("?")[0].split("#")[0];
 const IS_FILE = _autoUrl.startsWith("file:");
 const APP_URL = (MANUAL_APP_URL || (IS_FILE ? "" : _autoUrl));
 // ===========================================================
-//  GOOGLE SHEETS API
+//  GOOGLE SHEETS API v2 (read + write, sync ข้ามเครื่อง)
 // ===========================================================
 const GSheet = {
-  ok:()=>GAS_URL.length>10,
-  async syncStock(parts,mgs){if(!this.ok())return;try{const mgMap=Object.fromEntries(mgs.map(m=>[m.id,m]));
-    const rows=parts.map(p=>({partCode:p.partCode,name:p.name,machine:mgMap[p.mgId]?.name||"-",
-      category:p.cat,stock:p.stock,min:p.min,max:p.max,unit:p.unit,location:p.loc,
-      status:p.stock<=p.min?"CRITICAL":p.stock<=p.min*1.5?"LOW":p.stock>=p.max?"OVER":"OK",
-      updatedAt:new Date().toLocaleString("th-TH")}));
-    await fetch(GAS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain"},
-      body:JSON.stringify({action:"syncStock",data:rows})});}catch(e){console.warn("GSheet:",e);}},
-  async logTx(tx,mgName){if(!this.ok())return;try{
-    await fetch(GAS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain"},
-      body:JSON.stringify({action:"logTransaction",data:{
-        date:new Date().toLocaleString("th-TH"),partCode:tx.partCode,partName:tx.partName,
-        machine:mgName||"-",type:tx.type==="withdraw"?"เบิก":"รับเข้า",
-        qty:tx.qty,stockBefore:tx.stockBefore,stockAfter:tx.stockAfter,
-        approvedBy:tx.approvedBy||"-",note:tx.note||"-"}})});}catch(e){console.warn("GSheet:",e);}}
+  ok(){ return GAS_URL && GAS_URL.length > 10; },
+  async _post(action, data){
+    if(!this.ok()) return {ok:false, error:"no GAS_URL"};
+    try{
+      const r = await fetch(GAS_URL, {
+        method: "POST",
+        headers: {"Content-Type": "text/plain"},
+        body: JSON.stringify({action, data})
+      });
+      return await r.json();
+    }catch(e){ console.warn("GSheet POST", action, e); return {ok:false, error:String(e)}; }
+  },
+  async _get(action){
+    if(!this.ok()) return {ok:false, error:"no GAS_URL"};
+    try{
+      const r = await fetch(GAS_URL + "?action=" + encodeURIComponent(action), {method:"GET"});
+      return await r.json();
+    }catch(e){ console.warn("GSheet GET", action, e); return {ok:false, error:String(e)}; }
+  },
+  getAll(){ return this._get("getAll"); },
+  syncParts(parts){ return this._post("syncParts", parts); },
+  syncMGs(mgs){ return this._post("syncMGs", mgs); },
+  syncPending(pending){ return this._post("syncPending", pending); },
+  addPending(row){ return this._post("addPending", row); },
+  addPart(row){ return this._post("addPart", row); },
+  addTx(row){ return this._post("addTx", row); },
+  deletePending(id){ return this._post("deletePending", {id}); },
+  clearPending(){ return this._post("clearPending"); },
+  deletePart(id){ return this._post("deletePart", {id}); },
+  updatePart(part){ return this._post("updatePart", part); },
+  logTx(tx){ return this.addTx(tx); },
+  syncStock(parts){ return this.syncParts(parts); },
 };
 // ===========================================================
 //  CONSTANTS
 // ===========================================================
 const KEYS={parts:"spt_parts",tx:"spt_tx",mg:"spt_mg",pending:"spt_pending",users:"spt_users",session:"spt_scan_session"};
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 ชั่วโมง
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MG=[
   {id:"mg1",name:"Robot ABB",icon:"🤖",color:"#f59e0b"},
   {id:"mg2",name:"Robot Yaskawa",icon:"🦾",color:"#10b981"},
@@ -78,11 +95,10 @@ const DEFAULT_USERS=[
   {id:"u2",username:"MTN01",name:"Maintenance",role:"User",dept:"Maintenance",password:"1234"},
   {id:"u3",username:"ENG",name:"Engineer",role:"approver",dept:"Management",password:"Admin"},
 ];
-const now=new Date().toISOString();
+const _now=new Date().toISOString();
 const INIT_PARTS=[
-  {id:"p1",partCode:"ABB-BRG-6205",name:"Bearing 6205",desc:"Deep groove ball bearing",unit:"ชิ้น",stock:45,min:10,max:100,loc:"A-01",cat:"Bearing",mgId:"mg1",createdAt:now},
+  {id:"p1",partCode:"ABB-BRG-6205",name:"Bearing 6205",desc:"Deep groove ball bearing",unit:"ชิ้น",stock:45,min:10,max:100,loc:"A-01",cat:"Bearing",mgId:"mg1",createdAt:_now},
 ];
-// === Storage =============================================
 const load=(k,fb)=>{try{return JSON.parse(localStorage.getItem(k))||fb;}catch{return fb;}};
 const store=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
 const uid=()=>Math.random().toString(36).slice(2,10);
@@ -99,7 +115,33 @@ const getMGs=()=>load(KEYS.mg,DEFAULT_MG);
 const getPending=()=>load(KEYS.pending,[]);
 const getUsers=()=>load(KEYS.users,DEFAULT_USERS);
 
-// === Session cache (24 ชม.) ==============================
+// === ดึงข้อมูลจาก Cloud → localStorage ===
+async function pullFromCloud(){
+  if(!GSheet.ok()) return {ok:false, error:"GAS_URL ไม่ได้ตั้งค่า"};
+  const r = await GSheet.getAll();
+  if(!r || !r.ok || !r.data) return {ok:false, error:r?.error || "ดึงข้อมูลไม่สำเร็จ"};
+  const d = r.data;
+  const numFields = ["stock","min","max","qty","stockBefore","stockAfter"];
+  const coerce = (rows) => (rows||[]).map(row => {
+    const o = {...row};
+    numFields.forEach(k => { if(o[k] !== undefined && o[k] !== "" && o[k] !== null) o[k] = Number(o[k]) || 0; });
+    return o;
+  });
+  if(d.parts && d.parts.length > 0) store(KEYS.parts, coerce(d.parts));
+  if(d.mgs && d.mgs.length > 0) store(KEYS.mg, d.mgs);
+  store(KEYS.pending, coerce(d.pending || []));
+  store(KEYS.tx, coerce(d.tx || []));
+  return {ok:true, ts:r.ts};
+}
+async function pushAllToCloud(){
+  if(!GSheet.ok()) return {ok:false};
+  await GSheet.syncMGs(getMGs());
+  await GSheet.syncParts(getParts());
+  await GSheet.syncPending(getPending());
+  return {ok:true};
+}
+
+// === Session cache (24 ชม.) ===
 function getCachedSession(){
   try{
     const raw = localStorage.getItem(KEYS.session);
@@ -116,9 +158,7 @@ function getCachedSession(){
 function setCachedSession(user){
   localStorage.setItem(KEYS.session, JSON.stringify({user, timestamp: Date.now()}));
 }
-function clearCachedSession(){
-  localStorage.removeItem(KEYS.session);
-}
+function clearCachedSession(){ localStorage.removeItem(KEYS.session); }
 function getRemainingMs(){
   const s = getCachedSession();
   if(!s) return 0;
@@ -127,10 +167,8 @@ function getRemainingMs(){
 function formatRemaining(ms){
   if(ms<=0) return "หมดอายุ";
   const totalMin = Math.floor(ms/60000);
-  const h = Math.floor(totalMin/60);
-  const m = totalMin%60;
-  if(h>0) return `${h} ชม. ${m} น.`;
-  return `${m} นาที`;
+  const h = Math.floor(totalMin/60), m = totalMin%60;
+  return h>0 ? `${h} ชม. ${m} น.` : `${m} นาที`;
 }
 function validateEmployeeId(id){
   const trimmed = (id||"").trim();
@@ -155,7 +193,6 @@ const statusCfg={
 };
 function sBadge(st){return{display:"inline-block",padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:600,
   background:statusCfg[st]?.bg,color:statusCfg[st]?.color,border:`1px solid ${statusCfg[st]?.border}`};}
-// === QR ===================================================
 function QR({value,size=140}){
   const url=`https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(value)}&choe=UTF-8`;
   return <div style={{display:"inline-block",background:"#fff",borderRadius:8,padding:8,
@@ -166,7 +203,6 @@ function makeQRUrl(partCode){
   if(!APP_URL) return partCode;
   return APP_URL + "?scan=" + encodeURIComponent(partCode);
 }
-// === Styles ==============================================
 const C={bg:"#f4f5f7",border:"#e2e4e9",text:"#111827",sub:"#6b7280",muted:"#9ca3af",
   primary:"#1d4ed8",primaryL:"#eff6ff",sidebar:"#0f172a",sidebarAct:"#1e3a5f"};
 const btn=(v="primary",ex={})=>({padding:"8px 16px",borderRadius:6,border:"none",cursor:"pointer",
@@ -203,79 +239,97 @@ function App(){
   const [scanPopup,setScanPopup]=useState(null);
   const [scanUnknown,setScanUnknown]=useState(null);
   const [syncing,setSyncing]=useState(false);
-  // tick สำหรับ re-render countdown ทุกนาที
   const [tick,setTick]=useState(0);
-
-  useEffect(()=>{
-    initDB();refresh();
-    // โหลด session ที่ cache ไว้ (ถ้ายังไม่หมด 24 ชม.)
-    const cached = getCachedSession();
-    if(cached && cached.user){
-      setSession(cached.user);
-    }
-    // ดักจับ ?scan= จาก URL
-    const params=new URLSearchParams(window.location.search);
-    const scanCode=params.get("scan");
-    if(scanCode){
-      window.history.replaceState({},"",window.location.href.split("?")[0]);
-      setTimeout(()=>{
-        const allParts=getParts();
-        const codeLower=scanCode.toLowerCase();
-        const p=allParts.find(x=>
-          x.partCode===scanCode || x.id===scanCode ||
-          x.partCode.toLowerCase()===codeLower
-        );
-        if(p){
-          setScanPopup(p);
-          setPage("scan");
-        } else {
-          setScanUnknown(scanCode);
-          setPage("scan");
-        }
-      },300);
-    }
-    // ตั้ง interval re-render ทุก 60 วินาที (สำหรับ countdown)
-    const itv = setInterval(()=>setTick(t=>t+1), 60000);
-    return ()=>clearInterval(itv);
-  },[]);
 
   function refresh(){setParts(getParts());setTxs(getTx());setMgs(getMGs());setPending(getPending());}
   function notify(msg,type="ok"){setNotif({msg,type});setTimeout(()=>setNotif(null),3500);}
+  function establishSession(user){ setSession(user); setCachedSession(user); }
+  function logoutSession(){ setSession(null); clearCachedSession(); notify("ออกจากระบบและล้าง session แล้ว","warn"); }
+
+  useEffect(()=>{
+    initDB();refresh();
+    const cached = getCachedSession();
+    if(cached && cached.user) setSession(cached.user);
+    (async ()=>{
+      if(GSheet.ok()){
+        setSyncing(true);
+        const r = await pullFromCloud();
+        setSyncing(false);
+        if(r.ok){
+          refresh();
+          if(getParts().length <= 1){ await pushAllToCloud(); }
+        } else {
+          notify("ดึงข้อมูลจาก Cloud ล้มเหลว: "+(r.error||"-"),"warn");
+        }
+      }
+      const params=new URLSearchParams(window.location.search);
+      const scanCode=params.get("scan");
+      if(scanCode){
+        window.history.replaceState({},"",window.location.href.split("?")[0]);
+        setTimeout(()=>{
+          const allParts=getParts();
+          const cLower=scanCode.toLowerCase();
+          const p=allParts.find(x=>
+            x.partCode===scanCode || x.id===scanCode ||
+            x.partCode.toLowerCase()===cLower);
+          if(p){ setScanPopup(p); setPage("scan"); }
+          else { setScanUnknown(scanCode); setPage("scan"); }
+        },300);
+      }
+    })();
+    const onFocus = async ()=>{
+      if(!GSheet.ok()) return;
+      const r = await pullFromCloud();
+      if(r.ok) refresh();
+    };
+    window.addEventListener("focus", onFocus);
+    const poll = setInterval(async ()=>{
+      if(document.visibilityState !== "visible") return;
+      if(!GSheet.ok()) return;
+      const r = await pullFromCloud();
+      if(r.ok) refresh();
+    }, 30000);
+    const itv = setInterval(()=>setTick(t=>t+1), 60000);
+    return ()=>{
+      clearInterval(itv); clearInterval(poll);
+      window.removeEventListener("focus", onFocus);
+    };
+  },[]);
+
   const mgMap=Object.fromEntries(mgs.map(m=>[m.id,m]));
   const alerts=parts.filter(p=>["critical","low"].includes(stockStatus(p)));
 
-  // === Session helpers ที่ App ใช้ ===
-  function establishSession(user){
-    setSession(user);
-    setCachedSession(user);
-  }
-  function logoutSession(){
-    setSession(null);
-    clearCachedSession();
-    notify("ออกจากระบบและล้าง session แล้ว","warn");
-  }
-
   async function syncToSheets(){
     if(!GSheet.ok()){notify("กรุณาตั้งค่า GAS_URL ก่อน","warn");return;}
-    setSyncing(true);await GSheet.syncStock(getParts(),getMGs());setSyncing(false);
-    notify("Sync ไป Google Sheet สำเร็จ");
+    setSyncing(true);
+    const r = await pullFromCloud();
+    setSyncing(false);
+    if(r.ok){ refresh(); notify("ดึงข้อมูลล่าสุดจาก Cloud สำเร็จ"); }
+    else notify("ดึงข้อมูลล้มเหลว: "+(r.error||"-"),"warn");
   }
-  function addPending(partId,qty,note,req){
+  async function pushAllNow(){
+    if(!GSheet.ok()){notify("กรุณาตั้งค่า GAS_URL ก่อน","warn");return;}
+    setSyncing(true); await pushAllToCloud(); setSyncing(false);
+    notify("Push ข้อมูลทั้งหมดขึ้น Cloud สำเร็จ");
+  }
+  async function addPending(partId,qty,note,req){
     const ps=getParts(),p=ps.find(x=>x.id===partId);if(!p)return;
-    const rows=getPending();
-    rows.push({id:uid(),partId,partCode:p.partCode,partName:p.name,mgId:p.mgId,unit:p.unit,
+    const newRow={id:uid(),partId,partCode:p.partCode,partName:p.name,mgId:p.mgId,unit:p.unit,
       qty,note,requesterId:req?.id,requesterName:req?.name,requesterUsername:req?.username,
-      createdAt:new Date().toISOString()});
-    store(KEYS.pending,rows);refresh();
+      createdAt:new Date().toISOString()};
+    const rows=getPending(); rows.push(newRow);
+    store(KEYS.pending,rows); refresh();
     notify(`ส่งคำขอเบิก ${p.name} x${qty} โดย ${req?.username||"-"}`);
+    if(GSheet.ok()) await GSheet.addPending(newRow);
   }
-  function addPendingByCode(partCode,qty,note,req){
-    const rows=getPending();
-    rows.push({id:uid(),partId:"unknown",partCode:partCode,partName:partCode,mgId:"-",unit:"ชิ้น",
+  async function addPendingByCode(partCode,qty,note,req){
+    const newRow={id:uid(),partId:"unknown",partCode:partCode,partName:partCode,mgId:"-",unit:"ชิ้น",
       qty,note,requesterId:req?.id,requesterName:req?.name,requesterUsername:req?.username,
-      createdAt:new Date().toISOString()});
-    store(KEYS.pending,rows);refresh();
+      createdAt:new Date().toISOString()};
+    const rows=getPending(); rows.push(newRow);
+    store(KEYS.pending,rows); refresh();
     notify(`ส่งคำขอเบิก ${partCode} x${qty} โดย ${req?.username||"-"}`);
+    if(GSheet.ok()) await GSheet.addPending(newRow);
   }
   async function approveAll(){
     const rows=getPending(),map={};
@@ -291,10 +345,17 @@ function App(){
     });
     store(KEYS.parts,ps);store(KEYS.tx,txNew);store(KEYS.pending,[]);
     refresh();notify(`อนุมัติและตัดยอด ${Object.keys(map).length} รายการสำเร็จ`);
-    for(const tx of newTxs) await GSheet.logTx(tx,mgMap[tx.mgId]?.name);
-    await GSheet.syncStock(getParts(),getMGs());
+    if(GSheet.ok()){
+      await GSheet.clearPending();
+      for(const tx of newTxs) await GSheet.addTx(tx);
+      await GSheet.syncParts(getParts());
+    }
   }
-  function deletePending(id){store(KEYS.pending,getPending().filter(r=>r.id!==id));refresh();notify("ลบรายการแล้ว","warn");}
+  async function deletePending(id){
+    store(KEYS.pending,getPending().filter(r=>r.id!==id));
+    refresh();notify("ลบรายการแล้ว","warn");
+    if(GSheet.ok()) await GSheet.deletePending(id);
+  }
   async function doReceive(partId,qty,note){
     const ps=getParts(),i=ps.findIndex(p=>p.id===partId);if(i===-1)return;
     const b=ps[i].stock;ps[i].stock=b+qty;store(KEYS.parts,ps);
@@ -303,25 +364,22 @@ function App(){
       approvedBy:session?.name,note,createdAt:new Date().toISOString()};
     const txNew=getTx();txNew.unshift(tx);store(KEYS.tx,txNew);
     refresh();notify(`รับเข้า ${ps[i].name} จำนวน ${qty} สำเร็จ`);
-    await GSheet.logTx(tx,mgMap[ps[i].mgId]?.name);
-    await GSheet.syncStock(getParts(),getMGs());
+    if(GSheet.ok()){ await GSheet.addTx(tx); await GSheet.syncParts(getParts()); }
   }
-  function doAddPart(data){
+  async function doAddPart(data){
     const ps=getParts();
     const newPart={id:uid(),...data,stock:+data.stock,min:+data.min,max:+data.max,createdAt:new Date().toISOString()};
-    ps.push(newPart);
-    store(KEYS.parts,ps);
-    setParts(getParts());setTxs(getTx());setMgs(getMGs());setPending(getPending());
+    ps.push(newPart); store(KEYS.parts,ps);
+    refresh();
     notify(`เพิ่ม ${data.name} สำเร็จ`);
     setAddM(false);
-    GSheet.syncStock(getParts(),getMGs());
+    if(GSheet.ok()) await GSheet.addPart(newPart);
   }
-  function doDeletePart(partId){
-    const ps=getParts().filter(p=>p.id!==partId);
-    store(KEYS.parts,ps);
+  async function doDeletePart(partId){
+    store(KEYS.parts,getParts().filter(p=>p.id!==partId));
     store(KEYS.pending,getPending().filter(r=>r.partId!==partId));
     refresh();notify("ลบ Spare Part แล้ว","warn");
-    GSheet.syncStock(getParts(),getMGs());
+    if(GSheet.ok()) await GSheet.deletePart(partId);
   }
   function exportCSV(){
     const rows=[["วันที่","รหัส","ชื่อ","เครื่องจักร","ประเภท","จำนวน","ก่อน","หลัง","อนุมัติโดย","หมายเหตุ"]];
@@ -332,8 +390,7 @@ function App(){
     a.download="spare_report.csv";a.click();notify("Export สำเร็จ");
   }
   function handleScanQR(val){
-    const v=val.trim();
-    if(!v) return;
+    const v=val.trim(); if(!v) return;
     let code=v;
     if(v.startsWith("SPAREPART:")) code=v.split(":")[2]||v.split(":")[1];
     const freshParts=getParts();
@@ -341,14 +398,9 @@ function App(){
     const p=freshParts.find(x=>
       x.partCode===code || x.partCode===v ||
       x.partCode.toLowerCase()===cLower || x.partCode.toLowerCase()===vLower ||
-      x.id===code || x.id===v
-    );
-    if(p){
-      setScanPopup(p);
-      refresh();
-    } else {
-      setScanUnknown(code);
-    }
+      x.id===code || x.id===v);
+    if(p){ setScanPopup(p); refresh(); }
+    else setScanUnknown(code);
   }
   const mgParts=selMG?parts.filter(p=>p.mgId===selMG):parts;
   const catList=[...new Set(mgParts.map(p=>p.cat))].sort();
@@ -376,7 +428,7 @@ function App(){
           <div style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>⚙ SpareTrack</div>
           <div style={{fontSize:11,color:"#64748b",marginTop:2}}>QR Stock Management</div>
           {GSheet.ok()&&<div className="sync-pulse" style={{marginTop:6,fontSize:10,color:"#4ade80",display:"flex",alignItems:"center",gap:4}}>
-            <span style={{width:6,height:6,borderRadius:"50%",background:"#4ade80",display:"inline-block"}}/>Google Sheet Connected</div>}
+            <span style={{width:6,height:6,borderRadius:"50%",background:"#4ade80",display:"inline-block"}}/>Cloud Sync Active</div>}
         </div>
         <div style={{flex:1,paddingTop:8}}>
           {nav.map(n=>{const act=page===n.id;
@@ -391,12 +443,11 @@ function App(){
         </div>
         {GSheet.ok()&&<div style={{padding:"8px 20px"}}>
           <button style={{...btn("outline",{width:"100%",justifyContent:"center",fontSize:11,padding:"7px 12px",color:"#94a3b8",borderColor:"#334155"})}}
-            onClick={syncToSheets} disabled={syncing}>{syncing?"⏳ Syncing...":"🔄 Sync → Google Sheet"}</button></div>}
+            onClick={syncToSheets} disabled={syncing}>{syncing?"⏳ Syncing...":"🔄 ดึงข้อมูลล่าสุด"}</button></div>}
         <div style={{padding:"14px 20px",borderTop:"1px solid #1e293b"}}>
           {session?<>
             <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>
-              {session.role.toLowerCase()==="approver"?"👔 ผู้อนุมัติ":"👷 ผู้เบิก (จำไว้ 24 ชม.)"}
-            </div>
+              {session.role.toLowerCase()==="approver"?"👔 ผู้อนุมัติ":"👷 ผู้เบิก (จำไว้ 24 ชม.)"}</div>
             <div style={{fontSize:13,color:"#f1f5f9",fontWeight:600,marginBottom:2}}>{session.name}</div>
             <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>{session.username} · {session.dept}</div>
             {remainingMs>0 && session.role.toLowerCase()!=="approver" &&
@@ -425,51 +476,40 @@ function App(){
           onApproveAll={approveAll} onDelete={deletePending} onLogin={()=>setLoginM(true)}/>}
         {page==="txs"&&<TxPage txs={txs} mgMap={mgMap} onExport={exportCSV}/>}
         {page==="settings"&&<SettingsPage mgs={mgs} parts={parts} mgMap={mgMap}
-          onSaveMGs={g=>{store(KEYS.mg,g);setMgs(g);notify("บันทึกสำเร็จ");}}
-          onDeletePart={doDeletePart}/>}
+          onSaveMGs={async g=>{store(KEYS.mg,g);setMgs(g);notify("บันทึกสำเร็จ");if(GSheet.ok()) await GSheet.syncMGs(g);}}
+          onDeletePart={doDeletePart} onPullCloud={syncToSheets} onPushCloud={pushAllNow}/>}
       </div>
       {addM&&<AddPartModal mgs={mgs} onAdd={doAddPart} onClose={()=>setAddM(false)}/>}
       {qrM&&<QRModal part={qrM} mg={mgMap[qrM.mgId]} onClose={()=>setQrM(null)}/>}
       {stkM&&<StockModal part={stkM.part} mode={stkM.mode} mg={mgMap[stkM.part.mgId]} session={session}
         onWithdraw={(pid,qty,note,reqUser)=>{
           if(reqUser && (!session || session.id!==reqUser.id)) establishSession(reqUser);
-          addPending(pid,qty,note,reqUser||session);
-          setStkM(null);
-        }}
+          addPending(pid,qty,note,reqUser||session); setStkM(null);}}
         onReceive={(pid,qty,note)=>{doReceive(pid,qty,note);setStkM(null);}}
         onClose={()=>setStkM(null)}/>}
       {loginM&&<LoginModal
         onLogin={u=>{establishSession(u);setLoginM(false);notify(`ยินดีต้อนรับ ${u.name}`);if(u.role.toLowerCase()==="approver")setPage("approve");}}
         onClose={()=>setLoginM(false)}/>}
-      {scanPopup&&<ScanWithdrawPopup part={scanPopup} mg={mgMap[scanPopup.mgId]} session={session}
-        remainingMs={remainingMs}
+      {scanPopup&&<ScanWithdrawPopup part={scanPopup} mg={mgMap[scanPopup.mgId]} session={session} remainingMs={remainingMs}
         onSubmit={(qty,note,reqUser)=>{
           if(reqUser && (!session || session.id!==reqUser.id)) establishSession(reqUser);
-          addPending(scanPopup.id,qty,note,reqUser||session);
-          setScanPopup(null);
-        }}
+          addPending(scanPopup.id,qty,note,reqUser||session); setScanPopup(null);}}
         onClose={()=>setScanPopup(null)}/>}
-      {scanUnknown&&<QuickWithdrawPopup partCode={scanUnknown} session={session}
-        remainingMs={remainingMs}
+      {scanUnknown&&<QuickWithdrawPopup partCode={scanUnknown} session={session} remainingMs={remainingMs}
         onSubmit={(qty,note,reqUser)=>{
           if(reqUser && (!session || session.id!==reqUser.id)) establishSession(reqUser);
-          addPendingByCode(scanUnknown,qty,note,reqUser||session);
-          setScanUnknown(null);
-        }}
+          addPendingByCode(scanUnknown,qty,note,reqUser||session); setScanUnknown(null);}}
         onClose={()=>setScanUnknown(null)}/>}
     </div>
   );
 }
-// ===========================================================
-//  DASHBOARD
-// ===========================================================
 function DashboardPage({parts,txs,mgs,mgMap,alerts,pending,onAddPart,onGoMG,onSync,syncing}){
   return <div style={{padding:32}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:28}}>
       <div><div style={{fontSize:22,fontWeight:700}}>Dashboard</div>
         <div style={{fontSize:13,color:C.sub,marginTop:2}}>ภาพรวมระบบจัดการ Spare Part</div></div>
       <div style={{display:"flex",gap:8}}>
-        {GSheet.ok()&&<button style={btn("outline")} onClick={onSync} disabled={syncing}>{syncing?"⏳":"🔄"} Sync</button>}
+        {GSheet.ok()&&<button style={btn("outline")} onClick={onSync} disabled={syncing}>{syncing?"⏳":"🔄"} ดึงข้อมูล</button>}
         <button style={btn()} onClick={onAddPart}>+ เพิ่ม Spare Part</button></div>
     </div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:16,marginBottom:24}}>
@@ -515,9 +555,6 @@ function DashboardPage({parts,txs,mgs,mgMap,alerts,pending,onAddPart,onGoMG,onSy
     </div>
   </div>;
 }
-// ===========================================================
-//  SPARE PARTS PAGE
-// ===========================================================
 function PartsPage({parts,filtered,mgs,mgMap,selMG,setSelMG,selCat,setSelCat,catList,search,setSearch,onWithdraw,onReceive,onQR,onAddPart}){
   return <div style={{display:"flex",minHeight:"100vh"}}>
     <aside style={{width:200,background:"#fff",borderRight:`1px solid ${C.border}`,padding:"24px 0",flexShrink:0}}>
@@ -570,29 +607,22 @@ function PartsPage({parts,filtered,mgs,mgMap,selMG,setSelMG,selCat,setSelCat,cat
     </div>
   </div>;
 }
-// ===========================================================
-//  SCAN QR PAGE
-// ===========================================================
 function ScanQRPage({parts,mgs,mgMap,onScan,session,remainingMs,onLogout,onLogin}){
   const [val,setVal]=useState("");
   const hasUrl = APP_URL && APP_URL.length > 5;
   function doScan(){if(!val.trim())return;onScan(val);setVal("");}
   return <div style={{padding:32,maxWidth:640,margin:"0 auto"}}>
     <div style={{fontSize:20,fontWeight:700,marginBottom:4}}>📱 สแกน QR Code เพื่อเบิก</div>
-    <div style={{fontSize:13,color:C.sub,marginBottom:20}}>สแกน QR ที่ติดชั้นวาง → Pop-up เบิกจะเด้งขึ้นทันที</div>
-
-    {/* === Session Badge (ผู้เบิกปัจจุบัน + Countdown) === */}
+    <div style={{fontSize:13,color:C.sub,marginBottom:20}}>สแกน QR ที่ชั้นวาง → Pop-up เบิกจะเด้งขึ้นทันที</div>
     {session && session.role.toLowerCase()!=="approver" ?
       <div style={{...card({padding:14,marginBottom:16,borderColor:"#86efac",background:"#f0fdf4"}),
         display:"flex",alignItems:"center",gap:12}}>
         <div style={{width:42,height:42,borderRadius:"50%",background:"#16a34a",color:"#fff",
-          display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,fontWeight:700}}>
-          {session.name.charAt(0)}
-        </div>
+          display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,fontWeight:700}}>{session.name.charAt(0)}</div>
         <div style={{flex:1}}>
-          <div style={{fontSize:11,color:"#166534",fontWeight:600,marginBottom:2}}>👷 ผู้เบิกปัจจุบัน (ระบบจำไว้ 24 ชม.)</div>
+          <div style={{fontSize:11,color:"#166534",fontWeight:600,marginBottom:2}}>👷 ผู้เบิกปัจจุบัน (จำไว้ 24 ชม.)</div>
           <div style={{fontSize:14,fontWeight:700,color:"#14532d"}}>{session.name} · <code style={{fontSize:12}}>{session.username}</code></div>
-          <div style={{fontSize:11,color:"#16a34a",marginTop:2}}>⏱ เหลือเวลา {formatRemaining(remainingMs)} — สแกนได้ไม่จำกัดครั้ง</div>
+          <div style={{fontSize:11,color:"#16a34a",marginTop:2}}>⏱ เหลือ {formatRemaining(remainingMs)} — สแกนได้ไม่จำกัด</div>
         </div>
         <button style={btn("outline",{fontSize:11,padding:"6px 12px"})} onClick={onLogout}>เปลี่ยนผู้เบิก</button>
       </div>
@@ -602,40 +632,34 @@ function ScanQRPage({parts,mgs,mgMap,onScan,session,remainingMs,onLogout,onLogin
         <div style={{fontSize:24}}>👤</div>
         <div style={{flex:1}}>
           <div style={{fontSize:13,fontWeight:700,color:"#92400e"}}>ยังไม่ระบุผู้เบิก</div>
-          <div style={{fontSize:11,color:"#b45309",marginTop:2}}>สแกน QR ได้เลย — ระบบจะถามรหัสพนักงานตอนยืนยัน</div>
+          <div style={{fontSize:11,color:"#b45309",marginTop:2}}>สแกน QR ได้เลย — ระบบจะถามรหัสตอนยืนยัน</div>
         </div>
         <button style={btn("outline",{fontSize:11,padding:"6px 12px"})} onClick={onLogin}>ใส่รหัสไว้ก่อน</button>
       </div>
     : null}
-
     <div style={card({overflow:"hidden",marginBottom:20})}>
       <div style={{background:"#0f172a",padding:"32px",textAlign:"center"}}>
         <div style={{width:140,height:140,margin:"0 auto 16px",border:"3px dashed #3b82f6",borderRadius:16,
           display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(59,130,246,.08)"}}>
           <div style={{textAlign:"center"}}><div style={{fontSize:40,marginBottom:4}}>📷</div>
-            <div style={{fontSize:11,color:"#94a3b8"}}>สแกน QR Code</div></div>
-        </div>
+            <div style={{fontSize:11,color:"#94a3b8"}}>สแกน QR Code</div></div></div>
         {hasUrl
-          ?<div style={{fontSize:13,color:"#4ade80",marginBottom:6}}>✓ พร้อมสแกน — ใช้กล้องมือถือสแกน QR ที่ชั้นวาง</div>
-          :<div style={{fontSize:13,color:"#fbbf24",marginBottom:6}}>⚠ กำลังเปิดจากไฟล์ — สแกน QR ไม่ได้ ต้องพิมพ์ Part Code</div>}
+          ?<div style={{fontSize:13,color:"#4ade80",marginBottom:6}}>✓ พร้อมสแกน</div>
+          :<div style={{fontSize:13,color:"#fbbf24",marginBottom:6}}>⚠ เปิดจากไฟล์ — สแกนไม่ได้</div>}
         <div style={{fontSize:11,color:"#64748b"}}>หรือพิมพ์ Part Code ด้านล่าง</div>
       </div>
       <div style={{padding:16}}>
         <div style={{display:"flex",gap:8}}>
-          <input style={{...inp({flex:1,fontSize:15,padding:"12px"})}} placeholder="พิมพ์ Part Code เช่น ABB-BRG-6205 ..."
-            value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")doScan();}}
-            autoFocus/>
+          <input style={{...inp({flex:1,fontSize:15,padding:"12px"})}} placeholder="พิมพ์ Part Code..."
+            value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")doScan();}} autoFocus/>
           <button style={{...btn("primary",{padding:"12px 20px",fontSize:14})}} onClick={doScan}>🔍 ค้นหา</button></div>
       </div>
     </div>
-
     <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>หรือเลือก Part จำลองการสแกน</div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:10}}>
       {parts.map(p=>{const mg=mgMap[p.mgId],st=stockStatus(p);
         return <div key={p.id} style={{...card({padding:14,cursor:"pointer",display:"flex",alignItems:"center",gap:12})}}
-          onClick={()=>onScan(p.partCode)}
-          onMouseOver={e=>e.currentTarget.style.boxShadow="0 2px 12px rgba(0,0,0,.1)"}
-          onMouseOut={e=>e.currentTarget.style.boxShadow="none"}>
+          onClick={()=>onScan(p.partCode)}>
           <div style={{width:44,height:44,borderRadius:8,background:`${mg?.color||"#6b7280"}12`,
             display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{mg?.icon||"⚙"}</div>
           <div style={{flex:1,minWidth:0}}>
@@ -647,24 +671,8 @@ function ScanQRPage({parts,mgs,mgMap,onScan,session,remainingMs,onLogout,onLogin
             <div style={{fontSize:13,fontWeight:700,marginTop:4,color:st==="critical"?"#dc2626":C.text}}>{p.stock} {p.unit}</div></div>
         </div>;})}
     </div>
-
-    {!hasUrl&&<div style={{marginTop:24,...card({padding:20,borderColor:"#fcd34d",background:"#fffbeb"})}}>
-      <div style={{fontWeight:700,fontSize:14,color:"#92400e",marginBottom:10}}>📋 วิธีทำให้สแกน QR ได้จริง</div>
-      <div style={{fontSize:12,color:"#78350f",lineHeight:1.8}}>
-        ตอนนี้เปิดจากไฟล์ในเครื่อง (<code>file://</code>) QR Code สแกนไม่ได้<br/><br/>
-        <strong>ขั้นตอน (ฟรี 100%):</strong><br/>
-        1. สมัคร <strong>Vercel.com</strong> หรือ <strong>Netlify.com</strong> (ใช้ Google Account ได้)<br/>
-        2. อัปโหลดไฟล์ <code>sparetrack.html</code> ขึ้นไป<br/>
-        3. ได้ URL เช่น <code>https://mycompany.vercel.app/sparetrack.html</code><br/>
-        4. เปิดจาก URL นั้น → QR Code จะสแกนได้ทันที<br/><br/>
-        <strong>ทางเลือก:</strong> ใส่ URL ในตัวแปร <code>MANUAL_APP_URL</code> ที่บรรทัดบนสุดของไฟล์ HTML
-      </div>
-    </div>}
   </div>;
 }
-// ===========================================================
-//  SCAN WITHDRAW POPUP — แก้ใหม่: ใส่รหัสพนักงานในตัว Popup เลย
-// ===========================================================
 function ScanWithdrawPopup({part,mg,session,remainingMs,onSubmit,onClose}){
   const [qty,setQty]=useState(1);
   const [note,setNote]=useState("");
@@ -672,19 +680,13 @@ function ScanWithdrawPopup({part,mg,session,remainingMs,onSubmit,onClose}){
   const [empErr,setEmpErr]=useState("");
   const st=stockStatus(part);
   const needEmpId = !session || session.role.toLowerCase()==="approver";
-  // หมายเหตุ: ถ้า session ปัจจุบันเป็น approver ให้ขอ employee ID ใหม่
-  //          เพราะการเบิกจริงต้องเป็น user ทั่วไป
-
   function handleSubmit(){
     if(needEmpId){
       const r = validateEmployeeId(empId);
       if(!r.ok){setEmpErr(r.err);return;}
       onSubmit(qty, note, r.user);
-    } else {
-      onSubmit(qty, note, session);
-    }
+    } else onSubmit(qty, note, session);
   }
-
   return <div style={MOD}><div className="anim-fade" style={MODB(440)}>
     <div style={{textAlign:"center",marginBottom:18}}>
       {mg&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginBottom:10,
@@ -693,22 +695,16 @@ function ScanWithdrawPopup({part,mg,session,remainingMs,onSubmit,onClose}){
       <div style={{fontWeight:700,fontSize:20,marginBottom:4}}>{part.name}</div>
       <code style={{fontSize:12,color:C.muted}}>{part.partCode}</code>
     </div>
-
-    {/* แสดงผู้เบิก ถ้ามี session อยู่แล้ว */}
     {!needEmpId &&
       <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:"10px 12px",marginBottom:14,
         display:"flex",alignItems:"center",gap:10}}>
         <div style={{width:32,height:32,borderRadius:"50%",background:"#16a34a",color:"#fff",
-          display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700}}>
-          {session.name.charAt(0)}
-        </div>
+          display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700}}>{session.name.charAt(0)}</div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:12,fontWeight:700,color:"#14532d"}}>{session.name} · {session.username}</div>
-          <div style={{fontSize:10,color:"#16a34a"}}>⏱ จำไว้อีก {formatRemaining(remainingMs)} (สแกนได้เรื่อยๆ)</div>
+          <div style={{fontSize:10,color:"#16a34a"}}>⏱ จำไว้อีก {formatRemaining(remainingMs)}</div>
         </div>
-      </div>
-    }
-
+      </div>}
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:16}}>
       <div style={{background:st==="critical"?"#fef2f2":C.bg,borderRadius:8,padding:"10px",textAlign:"center"}}>
         <div style={{fontSize:10,color:C.sub,marginBottom:2}}>คงเหลือ</div>
@@ -721,7 +717,6 @@ function ScanWithdrawPopup({part,mg,session,remainingMs,onSubmit,onClose}){
         <div style={{fontSize:10,color:C.sub,marginBottom:2}}>ตำแหน่ง</div>
         <div style={{fontSize:14,fontWeight:600}}>{part.loc}</div></div>
     </div>
-
     <div style={{marginBottom:14}}><span style={lbl()}>จำนวนที่ต้องการเบิก</span>
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16}}>
         <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}} onClick={()=>setQty(Math.max(1,qty-1))}>−</button>
@@ -731,119 +726,81 @@ function ScanWithdrawPopup({part,mg,session,remainingMs,onSubmit,onClose}){
         <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}} onClick={()=>setQty(Math.min(part.stock,qty+1))}>+</button>
       </div>
     </div>
-
     <div style={{marginBottom:14}}><span style={lbl()}>หมายเหตุ (ไม่บังคับ)</span>
-      <input style={inp()} placeholder="ระบุงาน / เครื่องจักรที่ใช้..." value={note} onChange={e=>setNote(e.target.value)}/>
+      <input style={inp()} placeholder="ระบุงาน / เครื่องจักร..." value={note} onChange={e=>setNote(e.target.value)}/>
     </div>
-
-    {/* === Inline Employee ID Input === */}
     {needEmpId &&
       <div style={{marginBottom:14,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:14}}>
-        <span style={{...lbl({color:"#1e40af"})}}>🔑 รหัสพนักงาน (ระบบจะจำไว้ 24 ชม.)</span>
-        <input style={{...inp({fontSize:16,padding:"10px 12px"})}}
-          placeholder="เช่น MTN, MTN01..."
-          value={empId}
-          onChange={e=>{setEmpId(e.target.value);setEmpErr("");}}
-          onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}}
-          autoFocus/>
+        <span style={{...lbl({color:"#1e40af"})}}>🔑 รหัสพนักงาน (จำไว้ 24 ชม.)</span>
+        <input style={{...inp({fontSize:16,padding:"10px 12px"})}} placeholder="เช่น MTN, MTN01..."
+          value={empId} onChange={e=>{setEmpId(e.target.value);setEmpErr("");}}
+          onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} autoFocus/>
         {empErr && <div style={{color:"#dc2626",fontSize:11,marginTop:6,fontWeight:600}}>⚠ {empErr}</div>}
-        <div style={{fontSize:10,color:"#1e40af",marginTop:6}}>💡 ใส่ครั้งเดียว → สแกน QR ครั้งต่อไปไม่ต้องใส่อีก</div>
-      </div>
-    }
-
+        <div style={{fontSize:10,color:"#1e40af",marginTop:6}}>💡 ใส่ครั้งเดียว สแกนต่อไปไม่ต้องใส่อีก</div>
+      </div>}
     <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:14,fontSize:15,borderRadius:10})}}
       onClick={handleSubmit}>✓ ยืนยันเบิก {qty} {part.unit}</button>
     <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
   </div></div>;
 }
-// ===========================================================
-//  QUICK WITHDRAW POPUP — แก้ใหม่: ใส่รหัสพนักงานในตัว Popup เลย
-// ===========================================================
 function QuickWithdrawPopup({partCode,session,remainingMs,onSubmit,onClose}){
   const [qty,setQty]=useState(1);
   const [note,setNote]=useState("");
   const [empId,setEmpId]=useState("");
   const [empErr,setEmpErr]=useState("");
   const needEmpId = !session || session.role.toLowerCase()==="approver";
-
   function handleSubmit(){
     if(needEmpId){
       const r = validateEmployeeId(empId);
       if(!r.ok){setEmpErr(r.err);return;}
       onSubmit(qty, note, r.user);
-    } else {
-      onSubmit(qty, note, session);
-    }
+    } else onSubmit(qty, note, session);
   }
-
   return <div style={MOD}><div className="anim-fade" style={MODB(440)}>
     <div style={{textAlign:"center",marginBottom:18}}>
       <div style={{fontSize:42,marginBottom:8}}>📱</div>
       <div style={{fontWeight:700,fontSize:18,marginBottom:6}}>สแกน QR สำเร็จ</div>
-      <div style={{background:C.primaryL,border:"1px solid #bfdbfe",borderRadius:8,padding:"10px 16px",
-        display:"inline-block"}}>
+      <div style={{background:C.primaryL,border:"1px solid #bfdbfe",borderRadius:8,padding:"10px 16px",display:"inline-block"}}>
         <code style={{fontSize:16,fontWeight:700,color:C.primary}}>{partCode}</code>
       </div>
     </div>
-
     {!needEmpId &&
       <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:"10px 12px",marginBottom:14,
         display:"flex",alignItems:"center",gap:10}}>
         <div style={{width:32,height:32,borderRadius:"50%",background:"#16a34a",color:"#fff",
-          display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700}}>
-          {session.name.charAt(0)}
-        </div>
+          display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700}}>{session.name.charAt(0)}</div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:12,fontWeight:700,color:"#14532d"}}>{session.name} · {session.username}</div>
           <div style={{fontSize:10,color:"#16a34a"}}>⏱ จำไว้อีก {formatRemaining(remainingMs)}</div>
         </div>
-      </div>
-    }
-
-    <div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:8,padding:10,marginBottom:14,fontSize:11,color:"#92400e"}}>
-      💡 รายละเอียด Part อยู่ในเครื่องหลัก — ผู้อนุมัติจะเห็นรายการนี้ในใบอนุมัติ
-    </div>
-
+      </div>}
     <div style={{marginBottom:14}}>
       <span style={lbl()}>จำนวนที่ต้องการเบิก</span>
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16}}>
-        <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}}
-          onClick={()=>setQty(Math.max(1,qty-1))}>−</button>
+        <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}} onClick={()=>setQty(Math.max(1,qty-1))}>−</button>
         <input type="number" min={1}
           style={{...inp({width:90,textAlign:"center",fontSize:28,fontWeight:700,borderRadius:10,padding:"8px"})}}
           value={qty} onChange={e=>setQty(Math.max(1,+e.target.value||1))}/>
-        <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}}
-          onClick={()=>setQty(qty+1)}>+</button>
+        <button style={{...btn("default",{padding:"10px 18px",fontSize:22,borderRadius:10})}} onClick={()=>setQty(qty+1)}>+</button>
       </div>
     </div>
-
     <div style={{marginBottom:14}}>
       <span style={lbl()}>หมายเหตุ (ไม่บังคับ)</span>
-      <input style={inp()} placeholder="ระบุงาน / เครื่องจักรที่ใช้..." value={note} onChange={e=>setNote(e.target.value)}/>
+      <input style={inp()} placeholder="ระบุงาน / เครื่องจักร..." value={note} onChange={e=>setNote(e.target.value)}/>
     </div>
-
     {needEmpId &&
       <div style={{marginBottom:14,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:14}}>
-        <span style={{...lbl({color:"#1e40af"})}}>🔑 รหัสพนักงาน (ระบบจะจำไว้ 24 ชม.)</span>
-        <input style={{...inp({fontSize:16,padding:"10px 12px"})}}
-          placeholder="เช่น MTN, MTN01..."
-          value={empId}
-          onChange={e=>{setEmpId(e.target.value);setEmpErr("");}}
-          onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}}
-          autoFocus/>
+        <span style={{...lbl({color:"#1e40af"})}}>🔑 รหัสพนักงาน (จำไว้ 24 ชม.)</span>
+        <input style={{...inp({fontSize:16,padding:"10px 12px"})}} placeholder="เช่น MTN, MTN01..."
+          value={empId} onChange={e=>{setEmpId(e.target.value);setEmpErr("");}}
+          onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} autoFocus/>
         {empErr && <div style={{color:"#dc2626",fontSize:11,marginTop:6,fontWeight:600}}>⚠ {empErr}</div>}
-        <div style={{fontSize:10,color:"#1e40af",marginTop:6}}>💡 ใส่ครั้งเดียว → สแกน QR ครั้งต่อไปไม่ต้องใส่อีก</div>
-      </div>
-    }
-
+      </div>}
     <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:14,fontSize:15,borderRadius:10})}}
       onClick={handleSubmit}>✓ ยืนยันเบิก {qty} ชิ้น</button>
     <button style={{...btn("ghost",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={onClose}>ยกเลิก</button>
   </div></div>;
 }
-// ===========================================================
-//  APPROVE PAGE
-// ===========================================================
 function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,onLogin}){
   const [tab,setTab]=useState("pending");
   const partMap=Object.fromEntries(parts.map(p=>[p.id,p]));
@@ -862,7 +819,7 @@ function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,
   return <div style={{padding:32}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:24}}>
       <div><div style={{fontSize:20,fontWeight:700}}>ใบรายการขอเบิก Spare Part</div>
-        <div style={{fontSize:13,color:C.sub,marginTop:3}}>รวบรวมรายการจนถึง 07:00 น.</div></div>
+        <div style={{fontSize:13,color:C.sub,marginTop:3}}>{GSheet.ok()?"Sync จาก Cloud ทุก 30 วินาที":"รายการในเครื่องนี้เท่านั้น"}</div></div>
       <div style={{textAlign:"right"}}><div style={{fontSize:13,fontWeight:600,color:C.primary}}>👔 {session.name}</div>
         <div style={{fontSize:12,color:C.sub}}>{session.dept}</div></div></div>
     <div style={{display:"flex",marginBottom:24,borderBottom:`2px solid ${C.border}`}}>
@@ -901,7 +858,7 @@ function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,
             <td colSpan={5} style={{...TD,color:C.sub}}>รายการ</td></tr></tfoot></table></div>
         <div style={{...card({padding:20,background:"#f0fdf4",borderColor:"#86efac"}),display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div><div style={{fontWeight:700,fontSize:14,color:"#166534"}}>พร้อมอนุมัติและตัดยอด Stock</div>
-            <div style={{fontSize:12,color:"#16a34a",marginTop:2}}>อนุมัติ {grouped.length} Part{GSheet.ok()?" + Sync Google Sheet":""}</div></div>
+            <div style={{fontSize:12,color:"#16a34a",marginTop:2}}>อนุมัติ {grouped.length} Part{GSheet.ok()?" + Sync Cloud":""}</div></div>
           <button style={btn("success")} onClick={onApproveAll}>✔ อนุมัติและตัดยอดทั้งหมด</button></div></>)}
     {tab==="history"&&<div style={card({overflow:"hidden"})}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -919,9 +876,6 @@ function ApprovePage({session,pending,txs,mgs,mgMap,parts,onApproveAll,onDelete,
         </tbody></table></div>}
   </div>;
 }
-// ===========================================================
-//  TRANSACTIONS
-// ===========================================================
 function TxPage({txs,mgMap,onExport}){
   return <div style={{padding:32}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
@@ -945,10 +899,7 @@ function TxPage({txs,mgMap,onExport}){
         </tbody></table></div>
   </div>;
 }
-// ===========================================================
-//  SETTINGS
-// ===========================================================
-function SettingsPage({mgs,parts,mgMap,onSaveMGs,onDeletePart}){
+function SettingsPage({mgs,parts,mgMap,onSaveMGs,onDeletePart,onPullCloud,onPushCloud}){
   const [list,setList]=useState(mgs.map(g=>({...g})));
   const [edit,setEdit]=useState(null);
   const [form,setForm]=useState({name:"",icon:"🤖",color:"#f59e0b"});
@@ -961,31 +912,41 @@ function SettingsPage({mgs,parts,mgMap,onSaveMGs,onDeletePart}){
   return <div style={{padding:32,maxWidth:800}}>
     <div style={{fontSize:20,fontWeight:700,marginBottom:24}}>ตั้งค่าระบบ</div>
     <div style={card({padding:20,marginBottom:20})}>
-      <div style={{fontWeight:700,fontSize:14,marginBottom:10}}>🔗 Google Sheets Connection</div>
+      <div style={{fontWeight:700,fontSize:14,marginBottom:10}}>🔗 Google Sheets (Cloud Sync)</div>
       {GSheet.ok()
-        ?<div style={{fontSize:13,color:"#16a34a",display:"flex",alignItems:"center",gap:6}}>
-          <span style={{width:8,height:8,borderRadius:"50%",background:"#16a34a",display:"inline-block"}}/>
-          เชื่อมต่อแล้ว — Sync อัตโนมัติเมื่ออนุมัติ/รับเข้า</div>
+        ?<>
+          <div style={{fontSize:13,color:"#16a34a",display:"flex",alignItems:"center",gap:6,marginBottom:14}}>
+            <span style={{width:8,height:8,borderRadius:"50%",background:"#16a34a",display:"inline-block"}}/>
+            เชื่อมต่อแล้ว — Sync ทุก 30 วินาที + เมื่อกลับมาที่ Tab</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button style={btn("outline")} onClick={onPullCloud}>⬇ ดึงข้อมูลจาก Cloud</button>
+            <button style={btn("outline")} onClick={onPushCloud}>⬆ Push ทุกอย่างขึ้น Cloud</button>
+          </div>
+          <div style={{marginTop:10,fontSize:11,color:C.sub,lineHeight:1.7}}>
+            <strong>⬇ ดึงข้อมูล:</strong> โหลดข้อมูลล่าสุดมาแทนที่ในเครื่องนี้<br/>
+            <strong>⬆ Push:</strong> ใช้ครั้งแรกเพื่อ Seed หรือกู้คืน
+          </div>
+        </>
         :<div><div style={{fontSize:13,color:"#d97706",marginBottom:8}}>⚠ ยังไม่ได้เชื่อมต่อ</div>
           <div style={{fontSize:12,color:C.sub,lineHeight:1.7}}>
             1. เปิด Google Sheets → Extensions → Apps Script<br/>
-            2. วาง Code จากไฟล์ <code>google-apps-script.js</code><br/>
-            3. Deploy → Web app → Copy URL ใส่ในตัวแปร <code>GAS_URL</code></div></div>}
+            2. วาง Code จาก <code>google-apps-script-v2.gs</code><br/>
+            3. Deploy → Web app → Execute as: Me, Who has access: <strong>Anyone</strong><br/>
+            4. Copy URL ใส่ในตัวแปร <code>GAS_URL</code> ในไฟล์ HTML</div></div>}
     </div>
     <div style={{display:"flex",marginBottom:20,borderBottom:`2px solid ${C.border}`,gap:0}}>
       {[{id:"machines",l:"🏭 จัดการเครื่องจักร",badge:0},{id:"parts",l:"🔧 จัดการ Spare Parts",badge:parts.length}].map(t=>
         <div key={t.id} style={{padding:"10px 20px",cursor:"pointer",fontSize:13,fontWeight:stab===t.id?700:500,
           color:stab===t.id?C.primary:C.sub,borderBottom:stab===t.id?`2px solid ${C.primary}`:"2px solid transparent",marginBottom:-2,
           display:"flex",alignItems:"center",gap:6}}
-          onClick={()=>setStab(t.id)}>
-          {t.l}
+          onClick={()=>setStab(t.id)}>{t.l}
           {t.badge>0&&<span style={{background:stab===t.id?"#1d4ed8":"#e5e7eb",color:stab===t.id?"#fff":"#6b7280",
             borderRadius:10,fontSize:10,padding:"1px 7px",fontWeight:700}}>{t.badge}</span>}
         </div>)}
     </div>
     {stab==="machines"&&<div style={card({padding:24})}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-        <div><div style={{fontWeight:700,fontSize:15}}>จัดการกลุ่มเครื่องจักร</div><div style={{fontSize:12,color:C.sub,marginTop:2}}>เพิ่ม / แก้ไข / ลบ</div></div>
+        <div><div style={{fontWeight:700,fontSize:15}}>จัดการกลุ่มเครื่องจักร</div></div>
         <button style={btn()} onClick={()=>{setForm({name:"",icon:"🤖",color:"#f59e0b"});setEdit("new");}}>+ เพิ่มกลุ่ม</button></div>
       {edit&&<div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:10,padding:20,marginBottom:20}}>
         <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>{edit==="new"?"เพิ่มกลุ่มใหม่":"แก้ไขกลุ่ม"}</div>
@@ -1013,39 +974,21 @@ function SettingsPage({mgs,parts,mgMap,onSaveMGs,onDeletePart}){
     {stab==="parts"&&<div style={card({padding:24})}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <div><div style={{fontWeight:700,fontSize:15}}>จัดการ Spare Parts</div>
-          <div style={{fontSize:12,color:C.sub,marginTop:2}}>ค้นหาและลบ Spare Part ที่ไม่ต้องการ</div></div>
-        <input style={{...inp({width:240})}} placeholder="🔍 ค้นหา Part Code / ชื่อ..."
-          value={partSearch} onChange={e=>setPartSearch(e.target.value)}/>
-      </div>
-      <div style={{display:"flex",gap:12,marginBottom:20}}>
-        {[{l:"ทั้งหมด",v:parts.length,c:"#3b82f6"},
-          {l:"Critical",v:parts.filter(p=>stockStatus(p)==="critical").length,c:"#dc2626"},
-          {l:"Low",v:parts.filter(p=>stockStatus(p)==="low").length,c:"#d97706"}].map((s,i)=>
-          <div key={i} style={{background:C.bg,borderRadius:8,padding:"8px 16px",textAlign:"center"}}>
-            <div style={{fontSize:10,color:C.sub}}>{s.l}</div>
-            <div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>)}
-      </div>
+          <div style={{fontSize:12,color:C.sub,marginTop:2}}>ค้นหาและลบ Spare Part</div></div>
+        <input style={{...inp({width:240})}} placeholder="🔍 ค้นหา..." value={partSearch} onChange={e=>setPartSearch(e.target.value)}/></div>
       {filteredParts.length===0
-        ?<div style={{textAlign:"center",padding:40,color:C.muted}}>ไม่พบ Spare Part ที่ค้นหา</div>
+        ?<div style={{textAlign:"center",padding:40,color:C.muted}}>ไม่พบ Spare Part</div>
         :<div style={{display:"flex",flexDirection:"column",gap:6}}>
-          <div style={{display:"flex",alignItems:"center",gap:12,padding:"8px 16px",fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".04em"}}>
-            <div style={{width:38}}/>
-            <div style={{flex:1}}>Part</div>
-            <div style={{width:90,textAlign:"center"}}>Stock</div>
-            <div style={{width:140,textAlign:"right"}}>จัดการ</div>
-          </div>
           {filteredParts.map(p=>{const mg=mgMap[p.mgId],st=stockStatus(p);
             return <div key={p.id} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",
               border:`1px solid ${confirmDel===p.id?"#fca5a5":C.border}`,borderRadius:8,
-              background:confirmDel===p.id?"#fef2f2":"#fff",transition:"all .15s"}}>
+              background:confirmDel===p.id?"#fef2f2":"#fff"}}>
               <div style={{width:38,height:38,borderRadius:8,background:`${mg?.color||"#6b7280"}12`,
-                display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
-                {mg?.icon||"⚙"}</div>
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>{mg?.icon||"⚙"}</div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2}}>
                   <code style={{fontSize:10,color:C.muted}}>{p.partCode}</code>
                   <span style={sBadge(st)}>{statusCfg[st].label}</span>
-                  {mg&&<span style={{fontSize:10,color:mg.color,fontWeight:600}}>{mg.icon} {mg.name}</span>}
                 </div>
                 <div style={{fontWeight:600,fontSize:13}}>{p.name}</div>
                 <div style={{fontSize:11,color:C.sub}}>{p.cat} · {p.loc}</div>
@@ -1058,21 +1001,15 @@ function SettingsPage({mgs,parts,mgMap,onSaveMGs,onDeletePart}){
                 {confirmDel===p.id
                   ?<div style={{display:"flex",gap:4,justifyContent:"flex-end",alignItems:"center"}}>
                     <span style={{fontSize:11,color:"#dc2626",fontWeight:600}}>ยืนยัน?</span>
-                    <button style={btn("danger",{fontSize:11,padding:"5px 10px"})}
-                      onClick={()=>{onDeletePart(p.id);setConfirmDel(null);}}>ลบเลย</button>
-                    <button style={btn("ghost",{fontSize:11,padding:"5px 8px"})}
-                      onClick={()=>setConfirmDel(null)}>✕</button></div>
-                  :<button style={btn("danger",{fontSize:12,padding:"6px 14px"})}
-                    onClick={()=>setConfirmDel(p.id)}>🗑 ลบ</button>}
+                    <button style={btn("danger",{fontSize:11,padding:"5px 10px"})} onClick={()=>{onDeletePart(p.id);setConfirmDel(null);}}>ลบเลย</button>
+                    <button style={btn("ghost",{fontSize:11,padding:"5px 8px"})} onClick={()=>setConfirmDel(null)}>✕</button></div>
+                  :<button style={btn("danger",{fontSize:12,padding:"6px 14px"})} onClick={()=>setConfirmDel(p.id)}>🗑 ลบ</button>}
               </div>
             </div>;})}
         </div>}
     </div>}
   </div>;
 }
-// ===========================================================
-//  MODALS
-// ===========================================================
 function LoginModal({onLogin,onClose}){
   const [u,setU]=useState("");const [p,setP]=useState("");const [err,setErr]=useState("");
   const [needPw,setNeedPw]=useState(false);const [foundUser,setFoundUser]=useState(null);
@@ -1081,9 +1018,7 @@ function LoginModal({onLogin,onClose}){
     const found=users.find(x=>x.username===u.trim());
     if(!found){setErr("ไม่พบรหัสพนักงานนี้ในระบบ");return;}
     if(found.role.toLowerCase()==="approver"){
-      if(!needPw){
-        setNeedPw(true);setFoundUser(found);setErr("");return;
-      }
+      if(!needPw){ setNeedPw(true);setFoundUser(found);setErr("");return; }
       if(found.password!==p){setErr("รหัสผ่านไม่ถูกต้อง");return;}
     }
     onLogin(found);
@@ -1098,11 +1033,11 @@ function LoginModal({onLogin,onClose}){
     {!needPw?<>
       <div style={{marginBottom:14}}>
         <span style={lbl()}>รหัสพนักงาน</span>
-        <input style={{...inp({fontSize:16,padding:"12px"})}} placeholder="ใส่รหัสพนักงาน เช่น MTN, MTN01..."
+        <input style={{...inp({fontSize:16,padding:"12px"})}} placeholder="เช่น MTN, MTN01..."
           value={u} onChange={e=>setU(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()} autoFocus/>
       </div>
       <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,marginBottom:6,fontSize:12,color:"#166534"}}>
-        💡 ผู้ปฏิบัติงาน — ใส่รหัสพนักงานอย่างเดียว ไม่ต้องใส่รหัสผ่าน · ระบบจำไว้ 24 ชม.</div>
+        💡 ผู้ปฏิบัติงาน — ใส่รหัสอย่างเดียว · ระบบจำไว้ 24 ชม.</div>
       <div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:8,padding:12,marginBottom:16,fontSize:12,color:C.sub}}>
         ผู้อนุมัติจะต้องใส่รหัสผ่านเพิ่มเติม</div>
     </>:<>
@@ -1117,8 +1052,8 @@ function LoginModal({onLogin,onClose}){
     {err&&<div style={{color:"#dc2626",fontSize:12,marginBottom:10,background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:6,padding:"8px 12px"}}>⚠ {err}</div>}
     <div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:8,padding:12,marginBottom:16,fontSize:12}}>
       <div style={{fontWeight:600,marginBottom:4,color:C.sub}}>บัญชีทดสอบ</div>
-      <div>👷 ผู้ปฏิบัติงาน: <code>MTN</code> หรือ <code>MTN01</code> (ไม่ต้องใส่รหัสผ่าน)</div>
-      <div style={{marginTop:4}}>👔 ผู้อนุมัติ: <code>ENG</code> (รหัสผ่าน: <code>Admin</code>)</div></div>
+      <div>👷 ผู้ปฏิบัติงาน: <code>MTN</code> / <code>MTN01</code></div>
+      <div style={{marginTop:4}}>👔 ผู้อนุมัติ: <code>ENG</code> (รหัส: <code>Admin</code>)</div></div>
     <button style={{...btn("primary",{width:"100%",justifyContent:"center",padding:12})}} onClick={tryLogin}>
       {needPw?"🔐 ยืนยันเข้าสู่ระบบ":"เข้าสู่ระบบ"}</button>
     {needPw&&<button style={{...btn("outline",{width:"100%",justifyContent:"center",marginTop:8})}} onClick={handleBack}>← กลับ</button>}
@@ -1133,10 +1068,6 @@ function StockModal({part,mode,mg,session,onWithdraw,onReceive,onClose}){
     if(needEmpId){
       const r = validateEmployeeId(empId);
       if(!r.ok){setEmpErr(r.err);return;}
-      // เก็บ session ใหม่และส่งคำขอ
-      setCachedSession(r.user);
-      // เรียก onWithdraw แต่ส่ง requester ผ่าน global session — ต้อง refresh page หลังจากนี้
-      // เพื่อความง่าย: setCachedSession แล้ว reload จาก getCachedSession ครั้งหน้าจะเจอ
       onWithdraw(part.id, qty, note, r.user);
     } else {
       if(isW) onWithdraw(part.id, qty, note, session);
@@ -1151,7 +1082,7 @@ function StockModal({part,mode,mg,session,onWithdraw,onReceive,onClose}){
       📋 คำขอเบิกจะถูกส่งให้ผู้อนุมัติก่อน</div>}
     <div style={{marginBottom:12}}><span style={lbl()}>จำนวน</span>
       <input type="number" min={1} max={isW?part.stock:99999} style={{...inp({width:120})}} value={qty} onChange={e=>setQty(+e.target.value||1)}/></div>
-    <div style={{marginBottom:14}}><span style={lbl()}>หมายเหตุ</span><input style={inp()} placeholder="ระบุงาน หรือเหตุผล..." value={note} onChange={e=>setNote(e.target.value)}/></div>
+    <div style={{marginBottom:14}}><span style={lbl()}>หมายเหตุ</span><input style={inp()} placeholder="ระบุงาน..." value={note} onChange={e=>setNote(e.target.value)}/></div>
     {needEmpId&&<div style={{marginBottom:14,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:12}}>
       <span style={{...lbl({color:"#1e40af"})}}>🔑 รหัสพนักงาน (จำไว้ 24 ชม.)</span>
       <input style={{...inp({fontSize:15})}} placeholder="เช่น MTN, MTN01..."
@@ -1174,18 +1105,12 @@ function QRModal({part,mg,onClose}){
     {mg&&<div style={{fontSize:12,color:mg.color,fontWeight:600,marginBottom:4}}>{mg.icon} {mg.name}</div>}
     <div style={{fontWeight:700,fontSize:16,marginBottom:2}}>{part.name}</div>
     <div style={{fontSize:12,color:C.sub,marginBottom:16}}>{part.partCode} · {part.loc}</div>
-    <div style={{display:"flex",justifyContent:"center",marginBottom:12}}>
-      <QR value={qrValue} size={200}/></div>
+    <div style={{display:"flex",justifyContent:"center",marginBottom:12}}><QR value={qrValue} size={200}/></div>
     {hasUrl
       ?<div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,marginBottom:12,fontSize:12,color:"#166534",textAlign:"left"}}>
-        <strong>✓ พร้อมสแกน!</strong> ใช้กล้องมือถือสแกน QR นี้<br/>
-        → เปิด Browser → หน้า SpareTrack → Popup เบิกเด้งขึ้นทันที</div>
+        <strong>✓ พร้อมสแกน!</strong> ใช้กล้องมือถือสแกน QR นี้</div>
       :<div style={{background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:8,padding:12,marginBottom:12,fontSize:12,color:"#991b1b",textAlign:"left"}}>
-        <strong>⚠ ยังสแกนไม่ได้!</strong> เพราะเปิดจากไฟล์ในเครื่อง (file://)<br/><br/>
-        <strong>วิธีแก้ — เลือก 1 วิธี:</strong><br/>
-        ① อัปโหลดไฟล์ HTML ไปที่ <strong>Vercel / Netlify / GitHub Pages</strong> (ฟรี)<br/>
-        ② หรือใส่ URL เว็บในตัวแปร <code>MANUAL_APP_URL</code> ในไฟล์ HTML บรรทัดบนสุด<br/><br/>
-        <em>ตอนนี้ QR เก็บแค่ Part Code: <code>{part.partCode}</code></em></div>}
+        <strong>⚠ ยังสแกนไม่ได้</strong> เพราะเปิดจาก file:// — Host ไฟล์ขึ้น Vercel/Netlify</div>}
     <div style={{fontSize:11,color:C.muted,marginBottom:12,wordBreak:"break-all",background:"#f8fafc",padding:8,borderRadius:6,
       display:"flex",alignItems:"center",gap:6}}>
       <span style={{flex:1,textAlign:"left"}}>{qrValue}</span>
@@ -1201,7 +1126,7 @@ function AddPartModal({mgs,onAdd,onClose}){
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
   return <div style={MOD}><div className="anim-fade" style={MODB(520)}>
     <div style={{fontWeight:700,fontSize:16,marginBottom:20}}>เพิ่ม Spare Part ใหม่</div>
-    <div style={{marginBottom:14}}><span style={lbl()}>เครื่องจักร / กลุ่ม <span style={{color:"#dc2626"}}>*</span></span>
+    <div style={{marginBottom:14}}><span style={lbl()}>เครื่องจักร <span style={{color:"#dc2626"}}>*</span></span>
       <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{mgs.map(mg=>{const act=f.mgId===mg.id;return <div key={mg.id}
         style={{display:"flex",alignItems:"center",gap:4,padding:"6px 12px",borderRadius:20,cursor:"pointer",fontSize:12,fontWeight:600,
           background:act?`${mg.color}18`:"#f3f4f6",border:`2px solid ${act?mg.color:"transparent"}`,color:act?mg.color:C.sub}}
@@ -1209,16 +1134,16 @@ function AddPartModal({mgs,onAdd,onClose}){
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
       {[["partCode","รหัส Part","BRG-6205"],["name","ชื่อ Spare Part","Bearing 6205"]].map(([k,l,ph])=>
         <div key={k}><span style={lbl()}>{l}</span><input style={inp()} placeholder={ph} value={f[k]} onChange={e=>s(k,e.target.value)}/></div>)}</div>
-    <div style={{marginBottom:12}}><span style={lbl()}>คำอธิบาย</span><input style={inp()} placeholder="รายละเอียด..." value={f.desc} onChange={e=>s("desc",e.target.value)}/></div>
+    <div style={{marginBottom:12}}><span style={lbl()}>คำอธิบาย</span><input style={inp()} placeholder="..." value={f.desc} onChange={e=>s("desc",e.target.value)}/></div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
-      <div><span style={lbl()}>หน่วย</span><input style={inp()} placeholder="ชิ้น / เส้น..." value={f.unit} onChange={e=>s("unit",e.target.value)}/></div>
+      <div><span style={lbl()}>หน่วย</span><input style={inp()} placeholder="ชิ้น..." value={f.unit} onChange={e=>s("unit",e.target.value)}/></div>
       <div><span style={lbl()}>หมวดหมู่</span><select style={{...inp()}} value={f.cat} onChange={e=>s("cat",e.target.value)}>{PART_CATS.map(c=><option key={c}>{c}</option>)}</select></div></div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
       {[["stock","Stock เริ่มต้น"],["min","Min"],["max","Max"]].map(([k,l])=>
         <div key={k}><span style={lbl()}>{l}</span><input type="number" style={inp()} value={f[k]} onChange={e=>s(k,e.target.value)}/></div>)}</div>
-    <div style={{marginBottom:20}}><span style={lbl()}>ตำแหน่งชั้นวาง</span><input style={inp()} placeholder="A-01, B-03..." value={f.loc} onChange={e=>s("loc",e.target.value)}/></div>
+    <div style={{marginBottom:20}}><span style={lbl()}>ตำแหน่งชั้นวาง</span><input style={inp()} placeholder="A-01..." value={f.loc} onChange={e=>s("loc",e.target.value)}/></div>
     <div style={{display:"flex",gap:8}}>
-      <button style={{...btn("primary",{flex:1,justifyContent:"center"})}} onClick={()=>{if(!f.partCode||!f.name||!f.mgId)return;onAdd(f);}}>✓ บันทึกและ Gen QR Code</button>
+      <button style={{...btn("primary",{flex:1,justifyContent:"center"})}} onClick={()=>{if(!f.partCode||!f.name||!f.mgId)return;onAdd(f);}}>✓ บันทึก</button>
       <button style={btn("ghost")} onClick={onClose}>ยกเลิก</button></div>
   </div></div>;
 }
