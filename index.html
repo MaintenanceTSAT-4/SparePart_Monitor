@@ -201,6 +201,7 @@ function App(){
     initDB();refresh();
     const cached=getCachedSession();
     if(cached&&cached.user)setSession(cached.user);
+
     // ★★★ SCAN QR LANDING — เด้งเต็มจอทันทีเมื่อ ?scan= อยู่ใน URL ★★★
     const params=new URLSearchParams(window.location.search);
     const scanCode=params.get("scan");
@@ -226,6 +227,7 @@ function App(){
         setScanLanding({code:scanCode,part:null,loading:false,error:null});
       })();
     }
+
     // background sync
     (async()=>{if(GSheet.ok()){setSyncing(true);const r=await pullFromCloud();setSyncing(false);if(r.ok){refresh();if(getParts().length<=1)await pushAllToCloud();}else notify("ดึง Cloud ล้มเหลว","warn");}})();
     const onFocus=async()=>{if(!GSheet.ok())return;const r=await pullFromCloud();if(r.ok)refresh();};
