@@ -7,23 +7,31 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'DM Sans','Noto Sans Thai',sans-serif;background:#f4f5f7;color:#111827}
+body{font-family:'DM Sans','Noto Sans Thai',sans-serif;background:#f4f5f7;color:#111827;overflow-x:hidden}
 input,select,textarea,button{font-family:inherit}
-::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:#f1f5f9}
 ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slideIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 .anim-fade{animation:fadeIn .25s ease}
 .sync-pulse{animation:pulse 2s infinite}
-@media print {
-  body > div > *:not(.print-root) { display: none !important; }
-  .print-root .no-print { display: none !important; }
-  .print-root { position: fixed !important; inset: 0 !important; background: white !important; overflow: visible !important; z-index: 9999 !important; }
-  .print-page { max-width: none !important; padding: 0 !important; box-shadow: none !important; border: none !important; }
-  .qr-card { break-inside: avoid; page-break-inside: avoid; }
-  @page { size: A4; margin: 8mm; }
+.sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:199;display:none}
+@media(max-width:768px){
+  .sidebar-overlay.open{display:block}
+  .desktop-sidebar{transform:translateX(-100%);transition:transform .25s ease}
+  .desktop-sidebar.open{transform:translateX(0);animation:slideIn .25s ease}
+  .main-content{margin-left:0!important}
+  .mob-header{display:flex!important}
 }
+@media print{
+  body>div>*:not(.print-root){display:none!important}
+  .print-root .no-print{display:none!important}
+  .qr-card{break-inside:avoid;page-break-inside:avoid}
+  @page{size:A4;margin:8mm}
+}
+
 </style>
 </head>
 <body>
@@ -207,6 +215,9 @@ function makeQRUrl(partCode){
   if(!APP_URL) return partCode;
   return APP_URL + "?scan=" + encodeURIComponent(partCode);
 }
+  // ─── Mobile detect ─────────────────────────────────────────
+ function useIsMobile(){const[m,setM]=useState(window.innerWidth<769);useEffect(()=>{const h=()=>setM(window.innerWidth<769);
+  window.addEventListener("resize",h);return()=>window.removeEventListener("resize",h);},[]);return m;} 
 
 const C={bg:"#f4f5f7",border:"#e2e4e9",text:"#111827",sub:"#6b7280",muted:"#9ca3af",
   primary:"#1d4ed8",primaryL:"#eff6ff",sidebar:"#0f172a",sidebarAct:"#1e3a5f"};
