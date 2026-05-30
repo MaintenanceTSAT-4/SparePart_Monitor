@@ -46,7 +46,7 @@ input,select,textarea,button{font-family:inherit}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef } = React;
-const GAS_URL = "https://script.google.com/macros/s/AKfycbxI2nXDFh65Qtr2FB8l9HZ7hyzcS48U6lI-QvfSGcqYB1K1punUGgb0-16MHlO_atM9tw/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxF7moOb4wZuj368fE6LDtEhCLQXkZ_KlGbEPI6DFv72Wm6uH9KhEBf0NjWWU9VDFgtJA/exec";
 const MANUAL_APP_URL = "";
 const POLL_INTERVAL_MS = 10000; // ★ 10 วินาที
 const _autoUrl = window.location.href.split("?")[0].split("#")[0];
@@ -269,6 +269,7 @@ function App(){
   const [tick,setTick]=useState(0);
   const [printAllM,setPrintAllM]=useState(false);
   const [sidebarOpen,setSidebarOpen]=useState(false);
+  const [scanLoading,setScanLoading]=useState(null);  // ★ Loading state สำหรับ scan
 
   function refresh(){setParts(getParts());setTxs(getTx());setMgs(getMGs());setPending(getPending());}
   function notify(msg,type){setNotif({msg,type:type||"ok"});setTimeout(()=>setNotif(null),3500);}
@@ -280,9 +281,6 @@ function App(){
     initDB();refresh();
     const cached = getCachedSession();
     if(cached && cached.user) setSession(cached.user);
-    // ★ ตรวจ ?scan= ทันที — เด้ง popup เบิกตรงไปเลย ไม่ต้องผ่านหน้าหลัก ★
-    const params = new URLSearchParams(window.location.search);
-    const scanCode = params.get("scan");
     const findPartByCode = (code) => {
       const allParts = getParts();
       const cLower = code.toLowerCase();
@@ -290,46 +288,64 @@ function App(){
         x.partCode === code || x.id === code ||
         (x.partCode && x.partCode.toLowerCase() === cLower));
     };
+    // ★ ตรวจ ?scan= ★
+    const params = new URLSearchParams(window.location.search);
+    const scanCode = params.get("scan");
+    console.log("[SpareTrack] scan parameter:", scanCode);
     if(scanCode){
+      // ลบ ?scan= ออกจาก URL (ไม่ให้ refresh แล้วเปิดซ้ำ)
       window.history.replaceState({}, "", window.location.href.split("?")[0]);
+      setPage("scan");
+      setScanLoading({code: scanCode, status: "ค้นหาในเครื่อง..."});
+      // Step 1: หาในเครื่องก่อน (เร็วสุด)
       const p = findPartByCode(scanCode);
       if(p){
+        console.log("[SpareTrack] found in localStorage:", p);
+        setScanLoading(null);
         setScanPopup(p);
-        setPage("scan");
         notify("📱 สแกน " + p.name + " สำเร็จ");
       } else {
+        // Step 2: ดึงจาก Cloud + หาอีกครั้ง
         (async () => {
+          setScanLoading({code: scanCode, status: "ดึงข้อมูลจาก Cloud..."});
           if(GSheet.ok()){
-            const r = await pullFromCloud();
-            if(r.ok){
-              refresh();
-              const p2 = findPartByCode(scanCode);
-              if(p2){
-                setScanPopup(p2);
-                setPage("scan");
-                notify("📱 สแกน " + p2.name + " สำเร็จ (จาก Cloud)");
-                return;
+            try {
+              const r = await pullFromCloud();
+              console.log("[SpareTrack] pullFromCloud result:", r);
+              if(r.ok){
+                refresh();
+                const p2 = findPartByCode(scanCode);
+                if(p2){
+                  console.log("[SpareTrack] found from cloud:", p2);
+                  setScanLoading(null);
+                  setScanPopup(p2);
+                  notify("📱 สแกน " + p2.name + " สำเร็จ (จาก Cloud)");
+                  return;
+                }
               }
-            }
+            } catch(e){ console.error("[SpareTrack] cloud err:", e); }
           }
+          // Step 3: ไม่เจอที่ไหนเลย → ใช้ Quick Withdraw mode
+          console.log("[SpareTrack] not found anywhere, using Quick Withdraw mode");
+          setScanLoading(null);
           setScanUnknown(scanCode);
-          setPage("scan");
-          notify("📱 สแกน " + scanCode + " (ไม่พบในฐานข้อมูล)", "warn");
+          notify("📱 สแกน " + scanCode + " (ไม่พบในระบบ - เบิกแบบกรอกเอง)", "warn");
         })();
       }
-    }
-    // Background pull จาก Cloud
-    (async ()=>{
-      if(GSheet.ok()){
-        setSyncing(true);
-        const r = await pullFromCloud();
-        setSyncing(false);
-        if(r.ok){
-          refresh();
-          if(getParts().length <= 1){ await pushAllToCloud(); }
+    } else {
+      // ไม่มี ?scan= → pull cloud ตามปกติ
+      (async ()=>{
+        if(GSheet.ok()){
+          setSyncing(true);
+          const r = await pullFromCloud();
+          setSyncing(false);
+          if(r.ok){
+            refresh();
+            if(getParts().length <= 1){ await pushAllToCloud(); }
+          }
         }
-      }
-    })();
+      })();
+    }
     const onFocus = async ()=>{
       if(!GSheet.ok()) return;
       const r = await pullFromCloud();
@@ -581,6 +597,23 @@ function App(){
           if(reqUser && (!session || session.id!==reqUser.id)) establishSession(reqUser);
           addPendingByCode(scanUnknown,qty,note,reqUser||session); setScanUnknown(null);}}
         onClose={()=>setScanUnknown(null)}/>}
+      {/* ★ Loading Overlay ตอนสแกน QR ★ */}
+      {scanLoading && <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,.92)",zIndex:500,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div className="anim-fade" style={{background:"#fff",borderRadius:14,padding:28,maxWidth:380,textAlign:"center"}}>
+          <div style={{fontSize:50,marginBottom:12}}>📱</div>
+          <div style={{fontSize:18,fontWeight:700,marginBottom:6}}>กำลังเปิด Spare Part</div>
+          <div style={{background:C.primaryL,border:"1px solid #bfdbfe",borderRadius:8,padding:"10px 16px",display:"inline-block",marginBottom:14}}>
+            <code style={{fontSize:16,fontWeight:700,color:C.primary}}>{scanLoading.code}</code>
+          </div>
+          <div style={{fontSize:13,color:C.sub,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+            <div style={{width:16,height:16,border:"3px solid #e5e7eb",borderTopColor:C.primary,borderRadius:"50%",
+              animation:"spin 1s linear infinite"}}/>
+            {scanLoading.status}
+          </div>
+          <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+        </div>
+      </div>}
     </div>
   );
 }
@@ -1358,6 +1391,44 @@ function PrintQRSheetModal({parts,mgMap,onClose}){
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
           <span style={{fontSize:11,color:C.sub}}>คอลัมน์:</span>
+          {[2,3,4].map(n=>
+            <button key={n} style={btn(cols===n?"primary":"outline",{fontSize:11,padding:"5px 10px"})} onClick={()=>setCols(n)}>{n}</button>
+          )}
+          <label style={{display:"inline-flex",alignItems:"center",gap:4,fontSize:11,color:C.sub,cursor:"pointer"}}>
+            <input type="checkbox" checked={showInfo} onChange={e=>setShowInfo(e.target.checked)}/> รายละเอียด
+          </label>
+          <button style={btn("primary",{fontSize:11,padding:"6px 12px"})} onClick={()=>window.print()}>⎙ พิมพ์</button>
+          <button style={btn("ghost",{fontSize:11,padding:"6px 10px"})} onClick={onClose}>ปิด</button>
+        </div>
+      </div>
+      {!hasUrl && <div className="no-print" style={{background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:8,padding:10,marginBottom:12,fontSize:11,color:"#991b1b"}}>
+        <strong>⚠ QR อาจสแกนแล้วเปิดไม่ได้</strong> — เปิดจาก <code>file://</code> ต้อง Host บน Vercel/Netlify
+      </div>}
+      <div style={{display:"grid",gridTemplateColumns:"repeat("+cols+",1fr)",gap:8}}>
+        {parts.map(p=>{
+          const mg = mgMap[p.mgId];
+          const qrSize = cols===2?180 : cols===3?140 : 110;
+          return <div key={p.id} className="qr-card" style={{border:"2px dashed "+C.border,borderRadius:8,padding:8,textAlign:"center",background:"#fff"}}>
+            {showInfo && mg && <div style={{fontSize:10,fontWeight:700,color:mg.color,marginBottom:4}}>{mg.icon} {mg.name}</div>}
+            <div style={{display:"flex",justifyContent:"center",marginBottom:6}}>
+              <QR value={makeQRUrl(p.partCode)} size={qrSize}/>
+            </div>
+            <div style={{fontSize:cols===4?10:12,fontWeight:700,marginBottom:2,lineHeight:1.2}}>{p.name}</div>
+            <code style={{fontSize:cols===4?9:10,color:C.sub,fontWeight:600}}>{p.partCode}</code>
+            {showInfo && <div style={{fontSize:cols===4?9:10,color:C.muted,marginTop:3}}>📍 {p.loc} · {p.cat}</div>}
+          </div>;
+        })}
+      </div>
+      {parts.length===0 && <div style={{textAlign:"center",padding:40,color:C.muted}}>ไม่มี Spare Part</div>}
+    </div>
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
+มน์:</span>
           {[2,3,4].map(n=>
             <button key={n} style={btn(cols===n?"primary":"outline",{fontSize:11,padding:"5px 10px"})} onClick={()=>setCols(n)}>{n}</button>
           )}
