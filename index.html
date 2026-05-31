@@ -670,37 +670,29 @@ function App() {
         setScanPopup(p);
         notify("📱 สแกน " + p.name + " สำเร็จ");
       } else {
-        // Step 2: ดึงจาก Cloud + หาอีกครั้ง
-        (async () => {
-          setScanLoading({
-            code: scanCode,
-            status: "ดึงข้อมูลจาก Cloud..."
-          });
-          if (GSheet.ok()) {
+        // ★ Optimized: เปิด Quick Withdraw ทันที ไม่ต้องรอ Cloud ★
+        console.log("[SpareTrack] not in local, opening Quick Withdraw immediately");
+        setScanLoading(null);
+        setScanUnknown(scanCode);
+        notify("📱 สแกน " + scanCode + " (ใส่จำนวนเบิกได้เลย)");
+        // Background: ดึง Cloud แล้วถ้าเจอ Part จริง สลับเป็น ScanWithdraw
+        if (GSheet.ok()) {
+          (async () => {
             try {
               const r = await pullFromCloud();
-              console.log("[SpareTrack] pullFromCloud result:", r);
               if (r.ok) {
                 refresh();
                 const p2 = findPartByCode(scanCode);
                 if (p2) {
-                  console.log("[SpareTrack] found from cloud:", p2);
-                  setScanLoading(null);
+                  console.log("[SpareTrack] upgraded to full popup:", p2);
+                  setScanUnknown(null);
                   setScanPopup(p2);
-                  notify("📱 สแกน " + p2.name + " สำเร็จ (จาก Cloud)");
-                  return;
+                  notify("✓ พบข้อมูล " + p2.name + " เต็มจาก Cloud");
                 }
               }
-            } catch (e) {
-              console.error("[SpareTrack] cloud err:", e);
-            }
-          }
-          // Step 3: ไม่เจอที่ไหนเลย → ใช้ Quick Withdraw mode
-          console.log("[SpareTrack] not found anywhere, using Quick Withdraw mode");
-          setScanLoading(null);
-          setScanUnknown(scanCode);
-          notify("📱 สแกน " + scanCode + " (ไม่พบในระบบ - เบิกแบบกรอกเอง)", "warn");
-        })();
+            } catch (e) { console.error("[SpareTrack] bg cloud err:", e); }
+          })();
+        }
       }
     } else {
       // ไม่มี ?scan= → pull cloud ตามปกติ
