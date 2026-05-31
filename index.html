@@ -655,27 +655,21 @@ function App() {
     const scanCode = params.get("scan");
     console.log("[SpareTrack] scan parameter:", scanCode);
     if (scanCode) {
-      // ลบ ?scan= ออกจาก URL (ไม่ให้ refresh แล้วเปิดซ้ำ)
+      console.log("[SpareTrack] SCAN DETECTED:", scanCode);
       window.history.replaceState({}, "", window.location.href.split("?")[0]);
-      setPage("scan");
-      setScanLoading({
-        code: scanCode,
-        status: "ค้นหาในเครื่อง..."
-      });
-      // Step 1: หาในเครื่องก่อน (เร็วสุด)
+      // ★ ALWAYS open a popup, no matter what ★
       const p = findPartByCode(scanCode);
       if (p) {
-        console.log("[SpareTrack] found in localStorage:", p);
-        setScanLoading(null);
+        console.log("[SpareTrack] found local:", p);
         setScanPopup(p);
+        setPage("scan");
         notify("📱 สแกน " + p.name + " สำเร็จ");
       } else {
-        // ★ Optimized: เปิด Quick Withdraw ทันที ไม่ต้องรอ Cloud ★
-        console.log("[SpareTrack] not in local, opening Quick Withdraw immediately");
-        setScanLoading(null);
+        console.log("[SpareTrack] not in local, showing Quick Withdraw");
         setScanUnknown(scanCode);
+        setPage("scan");
         notify("📱 สแกน " + scanCode + " (ใส่จำนวนเบิกได้เลย)");
-        // Background: ดึง Cloud แล้วถ้าเจอ Part จริง สลับเป็น ScanWithdraw
+        // Background upgrade from cloud
         if (GSheet.ok()) {
           (async () => {
             try {
@@ -684,13 +678,13 @@ function App() {
                 refresh();
                 const p2 = findPartByCode(scanCode);
                 if (p2) {
-                  console.log("[SpareTrack] upgraded to full popup:", p2);
+                  console.log("[SpareTrack] upgrade:", p2);
                   setScanUnknown(null);
                   setScanPopup(p2);
-                  notify("✓ พบข้อมูล " + p2.name + " เต็มจาก Cloud");
+                  notify("✓ ได้ข้อมูล " + p2.name + " ครบจาก Cloud");
                 }
               }
-            } catch (e) { console.error("[SpareTrack] bg cloud err:", e); }
+            } catch (e) { console.error("[SpareTrack] cloud err:", e); }
           })();
         }
       }
